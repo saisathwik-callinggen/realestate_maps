@@ -1,258 +1,462 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { Room, RoomEvent } from 'livekit-client'
 import './App.css'
 
-const capabilityCards = [
-  {
-    title: 'Voice-led lead capture',
-    description:
-      'Answer property questions, qualify intent, and move the conversation toward a booking without making the buyer fill out forms.',
-  },
-  {
-    title: 'Location-aware search',
-    description:
-      'Search by neighborhood, landmark, budget, or commute radius and surface the right projects on the map instantly.',
-  },
-  {
-    title: 'Site visit scheduling',
-    description:
-      'Offer available slots, confirm contact details, and hand off a ready-to-close booking to your sales team.',
-  },
-]
+type VoiceTurn = {
+  role: 'system' | 'user' | 'assistant'
+  text: string
+}
 
-const flowSteps = [
-  'Buyer asks for a project near a landmark or office location.',
-  'The agent narrows options on the map and recommends matching inventory.',
-  'A visit slot is locked in and the lead is pushed to the CRM or sales desk.',
-]
+type BackendConfig = {
+  livekit_url: string
+  livekit_configured: boolean
+  soravm_configured: boolean
+}
 
-const trustPoints = [
-  'Multilingual voice support',
-  'Live map context',
-  'Booked visit handoff',
-  'Lead qualification summary',
-]
+type VoiceTurnResponse = {
+  transcript?: string
+  response_text?: string
+  audio_base64?: string
+}
+
+const backendBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+const defaultRoom = 'real-estate-demo'
+const defaultIdentity = `buyer-${Math.random().toString(36).slice(2, 7)}`
 
 function App() {
-  const [isRecording, setIsRecording] = useState(false)
+  const roomRef = useRef<Room | null>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+
+  const [roomName, setRoomName] = useState(defaultRoom)
+  const [identity, setIdentity] = useState(defaultIdentity)
+  const [voice, setVoice] = useState('default')
+  const [config, setConfig] = useState<BackendConfig | null>(null)
+  const [status, setStatus] = useState('Ready to connect')
+  const [connected, setConnected] = useState(false)
+  const [recording, setRecording] = useState(false)
   const [transcript, setTranscript] = useState('')
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const audioChunksRef = useRef<Blob[]>([])
+  const [replyText, setReplyText] = useState('')
+  const [manualTranscript, setManualTranscript] = useState(
+    'I want a 2 BHK near Hinjewadi with a site visit this weekend',
+  )
+  const [turns, setTurns] = useState<VoiceTurn[]>([
+    {
+      role: 'system',
+      text: 'Connect to the local LiveKit room, then press record or send a typed query.',
+    },
+  ])
 
-  const startRecording = async () => {
-    setTranscript('')
+  useEffect(() => {
+    let active = true
+
+    fetch(`${backendBaseUrl}/config`)
+      .then((response) => response.json())
+      .then((data: BackendConfig) => {
+        if (active) {
+          setConfig(data)
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setConfig(null)
+        }
+      })
+
+    return () => {
+      active = false
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      void disconnectRoom()
+    }
+  }, [])
+
+  const appendTurn = (role: VoiceTurn['role'], text: string) => {
+    setTurns((currentTurns) => [...currentTurns, { role, text }])
+  }
+
+  const extractTranscript = (payload: Record<string, unknown>) => {
+    const candidates = [
+      payload.text,
+      payload.transcript,
+      payload.result,
+      payload?.data && typeof payload.data === 'object'
+        ? (payload.data as Record<string, unknown>).text
+        : undefined,
+    ]
+
+    const firstString = candidates.find((candidate) => typeof candidate === 'string')
+    if (typeof firstString === 'string') {
+      return firstString
+    }
+
+    return JSON.stringify(payload)
+  }
+
+  const ensureRecordingStream = async () => {
+    if (streamRef.current) {
+      return streamRef.current
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    streamRef.current = stream
+    return stream
+  }
+
+  const connectRoom = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const recorder = new MediaRecorder(stream)
-      mediaRecorderRef.current = recorder
-      audioChunksRef.current = []
+      setStatus('Requesting LiveKit token...')
+      const response = await fetch(
+        `${backendBaseUrl}/livekit/token?room=${encodeURIComponent(roomName)}&identity=${encodeURIComponent(identity)}`,
+      )
 
-      recorder.ondataavailable = (event: BlobEvent) => {
+      if (!response.ok) {
+        throw new Error(await response.text())
+      }
+
+      const payload = (await response.json()) as {
+        livekit_url: string
+        access_token: string
+      }
+
+      const room = new Room({
+        adaptiveStream: true,
+        dynacast: true,
+      })
+
+      room.on(RoomEvent.Disconnected, () => {
+        setConnected(false)
+        setStatus('Disconnected from LiveKit')
+      })
+
+      room.on(RoomEvent.Connected, () => {
+        setConnected(true)
+        setStatus(`Connected to ${roomName}`)
+      })
+
+      room.on(RoomEvent.TrackSubscribed, () => {
+        setStatus('Remote audio subscribed')
+      })
+
+      roomRef.current = room
+      setStatus('Connecting to local LiveKit server...')
+      await room.connect(payload.livekit_url, payload.access_token)
+      await room.localParticipant.setMicrophoneEnabled(true)
+
+      await ensureRecordingStream()
+      appendTurn('system', `Connected to ${roomName} as ${identity}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to connect'
+      setStatus(message)
+      appendTurn('system', message)
+    }
+  }
+
+  const disconnectRoom = async () => {
+    const room = roomRef.current
+    if (recorderRef.current?.state === 'recording') {
+      recorderRef.current.stop()
+    }
+
+    recorderRef.current = null
+    chunksRef.current = []
+
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+
+    if (room) {
+      room.removeAllListeners()
+      await room.disconnect()
+      roomRef.current = null
+    }
+
+    setConnected(false)
+    setRecording(false)
+  }
+
+  const playResponseAudio = async (audioBase64?: string) => {
+    if (!audioBase64 || !audioRef.current) {
+      return
+    }
+
+    audioRef.current.src = `data:audio/wav;base64,${audioBase64}`
+    await audioRef.current.play()
+  }
+
+  const sendVoiceTurn = async (text: string) => {
+    const response = await fetch(`${backendBaseUrl}/voice/turn`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        transcript: text,
+        voice,
+      }),
+    })
+
+    if (!response.ok) {
+      throw new Error(await response.text())
+    }
+
+    return (await response.json()) as VoiceTurnResponse
+  }
+
+  const handleRecordedBlob = async (blob: Blob) => {
+    const file = new File([blob], "turn.webm", {
+  type: "audio/webm",
+})
+    const formData = new FormData()
+    formData.append('audio_file', file)
+    formData.append('language', 'en-US')
+
+    setStatus('Sending audio to Soravm STT...')
+    const sttResponse = await fetch(`${backendBaseUrl}/soravm/stt`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    if (!sttResponse.ok) {
+      throw new Error(await sttResponse.text())
+    }
+
+    const transcriptPayload = (await sttResponse.json()) as Record<string, unknown>
+    const recognizedText = extractTranscript(transcriptPayload)
+    setTranscript(recognizedText)
+    appendTurn('user', recognizedText)
+
+    setStatus('Generating assistant reply...')
+    const voiceTurn = await sendVoiceTurn(recognizedText)
+    setReplyText(voiceTurn.response_text ?? '')
+    appendTurn('assistant', voiceTurn.response_text ?? '')
+    await playResponseAudio(voiceTurn.audio_base64)
+    setStatus('Reply played locally')
+  }
+
+  const toggleRecording = async () => {
+    if (recording) {
+      recorderRef.current?.stop()
+      setRecording(false)
+      setStatus('Processing recorded audio...')
+      return
+    }
+
+    try {
+      if (!connected) {
+        await connectRoom()
+      }
+
+      const stream = await ensureRecordingStream()
+      const recorder = new MediaRecorder(stream, {
+  mimeType: "audio/webm",
+})
+      chunksRef.current = []
+
+      recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data)
+          chunksRef.current.push(event.data)
         }
       }
 
       recorder.onstop = async () => {
-        setIsRecording(false)
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
-        await sendAudioToStt(audioBlob)
+        const blob = new Blob(chunksRef.current, {
+  type: "audio/webm",
+})
+        chunksRef.current = []
+
+        try {
+          await handleRecordedBlob(blob)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to process audio'
+          setStatus(message)
+          appendTurn('system', message)
+        }
       }
 
+      recorderRef.current = recorder
       recorder.start()
-      setIsRecording(true)
+      setRecording(true)
+      setStatus('Recording your question...')
     } catch (error) {
-      console.error('Microphone access failed', error)
-      setIsRecording(false)
+      const message = error instanceof Error ? error.message : 'Unable to start recording'
+      setStatus(message)
+      appendTurn('system', message)
     }
   }
 
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop()
-    }
-  }
-
-  const sendAudioToStt = async (audioBlob: Blob) => {
-    const formData = new FormData()
-    formData.append('audio_file', audioBlob, 'recording.webm')
+  const handleManualSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
 
     try {
-      const response = await fetch('http://localhost:8000/soravm/stt', {
-        method: 'POST',
-        body: formData,
-      })
-
-      if (!response.ok) {
-        console.error('STT request failed', response.status)
-        const error = await response.text()
-        setTranscript(`Error: ${error}`)
-        return
-      }
-
-      const json = await response.json()
-      setTranscript(json.text || JSON.stringify(json))
+      appendTurn('user', manualTranscript)
+      setTranscript(manualTranscript)
+      setStatus('Generating reply from typed prompt...')
+      const voiceTurn = await sendVoiceTurn(manualTranscript)
+      setReplyText(voiceTurn.response_text ?? '')
+      appendTurn('assistant', voiceTurn.response_text ?? '')
+      await playResponseAudio(voiceTurn.audio_base64)
+      setStatus('Reply played locally')
     } catch (error) {
-      console.error('STT request error', error)
-      setTranscript('Speech-to-text failed')
+      const message = error instanceof Error ? error.message : 'Failed to generate reply'
+      setStatus(message)
+      appendTurn('system', message)
     }
   }
 
   return (
-    <div className="landing-page">
+    <div className="app-shell">
       <div className="ambient ambient-left" aria-hidden="true" />
       <div className="ambient ambient-right" aria-hidden="true" />
 
-      <header className="topbar">
-        <div className="brand-lockup">
-          <div className="brand-mark">YA</div>
-          <div>
-            <p className="brand-name">Yohita AI</p>
-            <p className="brand-tag">Smart site visit assistant</p>
-          </div>
-        </div>
-
-        <nav className="topnav" aria-label="Primary">
-          <a href="#capabilities">Capabilities</a>
-          <a href="#flow">Flow</a>
-          <a href="#demo">Demo</a>
-        </nav>
-
-        <div className="header-actions">
-          <button className="header-cta" type="button" onClick={startRecording} disabled={isRecording}>
-            {isRecording ? 'Recording...' : 'Request a demo'}
-          </button>
-          {isRecording && (
-            <button className="secondary-cta" type="button" onClick={stopRecording}>
-              Stop recording
-            </button>
-          )}
-        </div>
-      </header>
-
-      <main>
-        <section className="hero" id="demo">
+      <main className="voice-dashboard">
+        <section className="hero-panel">
           <div className="hero-copy">
-            <span className="eyebrow">Real estate voice agent</span>
-            <h1>Book site visits faster with a voice-first property concierge.</h1>
+            <span className="eyebrow">Local LiveKit voice pipeline</span>
+            <h1>Real estate voice agent for local development.</h1>
             <p className="hero-text">
-              Let buyers describe what they want in natural language. The agent
-              searches the map, surfaces matching projects, qualifies the lead,
-              and books the visit in one conversation.
+              Connect to the local LiveKit server, capture a spoken question, send it through Soravm STT,
+              and return a property-focused reply with Soravm TTS.
             </p>
 
-            <div className="cta-row">
-              <a className="primary-cta" href="#flow">
-                See the booking flow
-              </a>
-              <a className="secondary-cta" href="#capabilities">
-                Explore capabilities
-              </a>
+            <div className="status-row">
+              <span className={`status-pill ${connected ? 'status-pill-live' : ''}`}>
+                {status}
+              </span>
+              <span className="status-pill status-pill-muted">
+                LiveKit {config?.livekit_configured ? 'configured' : 'not configured'}
+              </span>
+              <span className="status-pill status-pill-muted">
+                Soravm {config?.soravm_configured ? 'configured' : 'not configured'}
+              </span>
             </div>
 
-            <div className="trust-row" aria-label="Key benefits">
-              {trustPoints.map((point) => (
-                <span key={point} className="trust-pill">
-                  {point}
+            <div className="stats-grid">
+              <article>
+                <strong>Room</strong>
+                <span>{roomName}</span>
+              </article>
+              <article>
+                <strong>Identity</strong>
+                <span>{identity}</span>
+              </article>
+              <article>
+                <strong>Connection</strong>
+                <span>{connected ? 'Connected' : 'Disconnected'}</span>
+              </article>
+            </div>
+          </div>
+
+          <div className="control-panel">
+            <div className="console-card connection-card">
+              <div className="card-heading">
+                <div>
+                  <p className="console-label">LiveKit room</p>
+                  <h2>Join the local room</h2>
+                </div>
+                <span className={connected ? 'signal signal-on' : 'signal'}>
+                  {connected ? 'Online' : 'Idle'}
                 </span>
+              </div>
+
+              <div className="form-grid">
+                <label>
+                  Room name
+                  <input value={roomName} onChange={(event) => setRoomName(event.target.value)} />
+                </label>
+                <label>
+                  Identity
+                  <input value={identity} onChange={(event) => setIdentity(event.target.value)} />
+                </label>
+                <label>
+                  Voice
+                  <select value={voice} onChange={(event) => setVoice(event.target.value)}>
+                    <option value="default">Default</option>
+                    <option value="female">Female</option>
+                    <option value="male">Male</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="action-row">
+                <button type="button" onClick={connectRoom} disabled={connected}>
+                  Connect
+                </button>
+                <button type="button" className="ghost-button" onClick={disconnectRoom} disabled={!connected}>
+                  Disconnect
+                </button>
+                <button type="button" className="accent-button" onClick={toggleRecording}>
+                  {recording ? 'Stop recording' : 'Record question'}
+                </button>
+              </div>
+            </div>
+
+            <div className="console-card transcript-card">
+              <div className="card-heading">
+                <div>
+                  <p className="console-label">Pipeline output</p>
+                  <h2>Speech turn</h2>
+                </div>
+                <span className={recording ? 'wave-dot wave-dot-live' : 'wave-dot'} />
+              </div>
+
+              <div className="turn-stack">
+                <article>
+                  <strong>Recognized transcript</strong>
+                  <p>{transcript || 'No transcription yet.'}</p>
+                </article>
+                <article>
+                  <strong>Assistant reply</strong>
+                  <p>{replyText || 'The assistant response will appear here.'}</p>
+                </article>
+              </div>
+
+              <audio ref={audioRef} controls className="audio-player" />
+            </div>
+          </div>
+        </section>
+
+        <section className="console-row">
+          <div className="console-card history-card">
+            <div className="card-heading">
+              <div>
+                <p className="console-label">Conversation</p>
+                <h2>Local turn log</h2>
+              </div>
+            </div>
+
+            <div className="history-list">
+              {turns.map((turn, index) => (
+                <article key={`${turn.role}-${index}`} className={`history-item history-${turn.role}`}>
+                  <span>{turn.role}</span>
+                  <p>{turn.text}</p>
+                </article>
               ))}
             </div>
-
-            <div className="speech-output">
-              <p className="speech-label">Transcript</p>
-              <div className="speech-box">
-                {transcript ? transcript : 'Speak using the Request a demo button and stop recording when finished.'}
-              </div>
-            </div>
-
-            <div className="stats-grid" aria-label="Highlights">
-              <article>
-                <strong>Live map search</strong>
-                <span>Filter projects by area, landmark, commute, or budget.</span>
-              </article>
-              <article>
-                <strong>Instant booking</strong>
-                <span>Move from inquiry to confirmed site visit without delay.</span>
-              </article>
-              <article>
-                <strong>CRM ready</strong>
-                <span>Every conversation ends with a structured lead summary.</span>
-              </article>
-            </div>
           </div>
 
-          <div className="hero-console">
-            <div className="console-card console-avatar">
-              <div className="avatar-ring" aria-hidden="true">
-                <div className="avatar-core">YA</div>
-              </div>
+          <div className="console-card manual-card">
+            <div className="card-heading">
               <div>
-                <p className="console-label">Voice assistant status</p>
-                <h2>Speaking with a buyer now</h2>
-                <p>
-                  Guiding the user through neighborhoods, inventory, and visit
-                  timing in a single flow.
-                </p>
-              </div>
-              <div className="waveform" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-                <span />
-                <span />
+                <p className="console-label">Fallback input</p>
+                <h2>Send a typed question</h2>
               </div>
             </div>
 
-            <div className="console-card map-card" aria-label="Property map preview">
-              <div className="map-toolbar">
-                <span>Search location, project, or landmark</span>
-                <span className="map-live">Live</span>
-              </div>
-
-              <div className="map-surface" aria-hidden="true">
-                <div className="grid-lines" />
-                <span className="map-pin pin-one" />
-                <span className="map-pin pin-two" />
-                <span className="map-pin pin-three" />
-                <div className="map-card-overlay">
-                  <p>Hinjewadi Tech Heights</p>
-                  <span>2 BHK smart homes, available visits this week</span>
-                </div>
-              </div>
-
-              <div className="map-footer">
-                <div>
-                  <strong>Nearby matches</strong>
-                  <span>3 projects in the 3 km radius</span>
-                </div>
-                <button type="button">Book a visit</button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section className="capabilities" id="capabilities">
-          {capabilityCards.map((card) => (
-            <article key={card.title} className="capability-card">
-              <div className="capability-dot" aria-hidden="true" />
-              <h3>{card.title}</h3>
-              <p>{card.description}</p>
-            </article>
-          ))}
-        </section>
-
-        <section className="flow-section" id="flow">
-          <div className="section-heading">
-            <span className="eyebrow">Booking flow</span>
-            <h2>From voice query to confirmed site visit.</h2>
-          </div>
-
-          <div className="flow-grid">
-            {flowSteps.map((step, index) => (
-              <article key={step} className="flow-step">
-                <span className="step-index">0{index + 1}</span>
-                <p>{step}</p>
-              </article>
-            ))}
+            <form className="manual-form" onSubmit={handleManualSubmit}>
+              <textarea
+                value={manualTranscript}
+                onChange={(event) => setManualTranscript(event.target.value)}
+                rows={6}
+              />
+              <button type="submit" className="accent-button">
+                Generate voice reply
+              </button>
+            </form>
           </div>
         </section>
       </main>

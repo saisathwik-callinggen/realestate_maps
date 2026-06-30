@@ -1,32 +1,35 @@
-# React + TypeScript + Vite
+# Real Estate Voice Agent
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+This project uses a local LiveKit server for realtime voice transport and a FastAPI backend to keep Soravm STT/TTS credentials out of the browser.
 
-Currently, two official plugins are available:
+## Local Setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. Start LiveKit in Docker from the repo root:
+   ```powershell
+   docker compose up livekit
+   ```
+2. Configure `backend/.env` from `backend/.env.example`.
+3. Run the backend:
+   ```powershell
+   cd backend
+   uvicorn app:app --reload --host 0.0.0.0 --port 8000
+   ```
+4. Run the frontend:
+   ```powershell
+   npm run dev
+   ```
 
-## React Compiler
+## Voice Flow
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- The frontend requests a LiveKit token from the backend.
+- The browser joins the local LiveKit room and records the user’s mic input.
+- Recorded audio is sent to Soravm STT through the backend.
+- The backend generates a real-estate-specific reply and sends it to Soravm TTS.
+- The generated audio is played back in the browser.
 
-## Expanding the Oxlint configuration
+## Environment
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
-
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+- `LIVEKIT_API_KEY=devkey`
+- `LIVEKIT_API_SECRET=devsecret`
+- `LIVEKIT_URL=ws://localhost:7880`
+- `SORAVM_API_KEY=<your key>`

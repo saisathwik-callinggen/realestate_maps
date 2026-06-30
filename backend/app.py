@@ -1,6 +1,7 @@
 import base64
 import os
 import time
+from urllib import response
 import uuid
 
 import jwt
@@ -74,6 +75,11 @@ def synthesize_with_soravm(text: str, voice: str) -> bytes:
         raise HTTPException(status_code=502, detail=response.text)
 
     return response.content
+
+
+def tts_content_type(response: requests.Response) -> str:
+    content_type = response.headers.get("content-type", "audio/wav")
+    return content_type.split(";", 1)[0].strip() or "audio/wav"
 
 
 def build_real_estate_reply(transcript: str) -> str:
@@ -177,21 +183,98 @@ async def soravm_stt(audio_file: UploadFile = File(...), language: str = Form("e
 
 @app.post("/soravm/tts")
 async def soravm_tts(text: str = Form(...), voice: str = Form("default")):
-    audio_bytes = synthesize_with_soravm(text=text, voice=voice)
+    response = requests.post(
+        "https://api.sarvam.ai/text-to-speech",
+        headers={**soravm_headers(), "Content-Type": "application/json"},
+        json={"text": text, "voice": voice, "format": "wav"},
+        timeout=120,
+    )
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=response.text)
+
+    content_type = tts_content_type(response)
+    if not content_type.startswith("audio/"):
+        raise HTTPException(status_code=502, detail="TTS service returned a non-audio response")
+
+    audio_bytes = response.content
     audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
-    return {"audio_base64": audio_base64}
+    return {"audio_base64": audio_base64, "audio_mime_type": content_type}
 
 
 @app.post("/voice/turn")
+@app.post("/voice/turn")
 async def voice_turn(turn: VoiceTurnRequest):
     response_text = build_real_estate_reply(turn.transcript)
-    audio_bytes = synthesize_with_soravm(text=response_text, voice=turn.voice)
-    audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+    response = requests.post(
+        "https://api.sarvam.ai/text-to-speech",
+        headers={**soravm_headers(), "Content-Type": "application/json"},
+        json={
+            "text": response_text,
+            "voice": turn.voice,
+            "format": "wav",
+        },
+        timeout=120,
+    )
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=response.text)
+
+    data = response.json()
+
+    if "audios" not in data or len(data["audios"]) == 0:
+        raise HTTPException(
+            status_code=502,
+            detail="No audio returned from Sarvam TTS"
+        )
+
+    audio_base64 = data["audios"][0]
 
     return {
         "transcript": turn.transcript,
         "response_text": response_text,
         "audio_base64": audio_base64,
+        "audio_mime_type": "audio/wav",
         "language": turn.language,
         "voice": turn.voice,
     }
+    try:
+        response_text = build_real_estate_reply(turn.transcript)
+
+        response = requests.post(
+            "https://api.sarvam.ai/text-to-speech",
+            headers={**soravm_headers(), "Content-Type": "application/json"},
+            json={
+                "text": response_text,
+                "voice": turn.voice,
+                "format": "wav",
+            },
+            timeout=120,
+        )
+
+        print("Status:", response.status_code)
+        print("Headers:", response.headers)
+        print("Content-Type:", response.headers.get("Content-Type"))
+
+        content_type = tts_content_type(response)
+        print("Detected:", content_type)
+
+        audio_bytes = response.content
+        print("Audio length:", len(audio_bytes))
+
+        audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+        return {
+            "transcript": turn.transcript,
+            "response_text": response_text,
+            "audio_base64": audio_base64,
+            "audio_mime_type": content_type,
+            "language": turn.language,
+            "voice": turn.voice,
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))

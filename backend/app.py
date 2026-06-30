@@ -9,17 +9,20 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+from agent import handle_message
+
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
-LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
-LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
-LIVEKIT_URL = os.getenv("LIVEKIT_URL", "https://your-livekit-server.example.com")
-SORAVM_API_KEY = os.getenv("SORAVM_API_KEY")
+LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "").strip()
+LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "").strip()
+LIVEKIT_URL = os.getenv("LIVEKIT_URL", "http://localhost:7880").strip()
+SORAVM_API_KEY = os.getenv("SORAVM_API_KEY", "").strip()
 
-if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET or not SORAVM_API_KEY:
-    raise RuntimeError(
-        "Missing LIVEKIT_API_KEY, LIVEKIT_API_SECRET, or SORAVM_API_KEY in backend/.env"
-    )
+if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
+    raise RuntimeError("Missing LIVEKIT_API_KEY or LIVEKIT_API_SECRET in backend/.env")
+
+if not SORAVM_API_KEY:
+    print("Warning: SORAVM_API_KEY not found. STT/TTS routes will fail until it is set.")
 
 app = FastAPI(title="RealEstateAgent Voice Pipeline")
 
@@ -73,6 +76,9 @@ async def livekit_token(room: str, identity: str):
 
 @app.post("/soravm/stt")
 async def soravm_stt(audio_file: UploadFile = File(...), language: str = Form("en-US")):
+    if not SORAVM_API_KEY:
+        raise HTTPException(status_code=500, detail="SORAVM_API_KEY is not configured")
+
     audio_bytes = await audio_file.read()
     url = "https://api.soravm.ai/v1/speech-to-text"
     headers = {
@@ -88,8 +94,17 @@ async def soravm_stt(audio_file: UploadFile = File(...), language: str = Form("e
     return response.json()
 
 
+@app.post("/agent/chat")
+async def agent_chat(text: str = Form(...)):
+    response = handle_message(text)
+    return response
+
+
 @app.post("/soravm/tts")
 async def soravm_tts(text: str = Form(...), voice: str = Form("default")):
+    if not SORAVM_API_KEY:
+        raise HTTPException(status_code=500, detail="SORAVM_API_KEY is not configured")
+
     url = "https://api.soravm.ai/v1/text-to-speech"
     headers = {
         "Authorization": f"Bearer {SORAVM_API_KEY}",

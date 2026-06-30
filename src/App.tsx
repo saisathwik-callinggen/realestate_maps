@@ -1,3 +1,4 @@
+import { useRef, useState } from 'react'
 import './App.css'
 
 const capabilityCards = [
@@ -32,6 +33,70 @@ const trustPoints = [
 ]
 
 function App() {
+  const [isRecording, setIsRecording] = useState(false)
+  const [transcript, setTranscript] = useState('')
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+
+  const startRecording = async () => {
+    setTranscript('')
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = recorder
+      audioChunksRef.current = []
+
+      recorder.ondataavailable = (event: BlobEvent) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data)
+        }
+      }
+
+      recorder.onstop = async () => {
+        setIsRecording(false)
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
+        await sendAudioToStt(audioBlob)
+      }
+
+      recorder.start()
+      setIsRecording(true)
+    } catch (error) {
+      console.error('Microphone access failed', error)
+      setIsRecording(false)
+    }
+  }
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+    }
+  }
+
+  const sendAudioToStt = async (audioBlob: Blob) => {
+    const formData = new FormData()
+    formData.append('audio_file', audioBlob, 'recording.webm')
+
+    try {
+      const response = await fetch('http://localhost:8000/soravm/stt', {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (!response.ok) {
+        console.error('STT request failed', response.status)
+        const error = await response.text()
+        setTranscript(`Error: ${error}`)
+        return
+      }
+
+      const json = await response.json()
+      setTranscript(json.text || JSON.stringify(json))
+    } catch (error) {
+      console.error('STT request error', error)
+      setTranscript('Speech-to-text failed')
+    }
+  }
+
   return (
     <div className="landing-page">
       <div className="ambient ambient-left" aria-hidden="true" />
@@ -52,9 +117,16 @@ function App() {
           <a href="#demo">Demo</a>
         </nav>
 
-        <a className="header-cta" href="#demo">
-          Request a demo
-        </a>
+        <div className="header-actions">
+          <button className="header-cta" type="button" onClick={startRecording} disabled={isRecording}>
+            {isRecording ? 'Recording...' : 'Request a demo'}
+          </button>
+          {isRecording && (
+            <button className="secondary-cta" type="button" onClick={stopRecording}>
+              Stop recording
+            </button>
+          )}
+        </div>
       </header>
 
       <main>
@@ -83,6 +155,13 @@ function App() {
                   {point}
                 </span>
               ))}
+            </div>
+
+            <div className="speech-output">
+              <p className="speech-label">Transcript</p>
+              <div className="speech-box">
+                {transcript ? transcript : 'Speak using the Request a demo button and stop recording when finished.'}
+              </div>
             </div>
 
             <div className="stats-grid" aria-label="Highlights">

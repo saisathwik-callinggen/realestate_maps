@@ -33,12 +33,28 @@ This backend provides:
    uvicorn app:app --reload --host 0.0.0.0 --port 8000
    ```
 
+## Local LiveKit
+
+Start the LiveKit server in Docker from the repo root:
+
+```powershell
+docker compose up livekit
+```
+
+Use these local defaults while developing:
+
+- `LIVEKIT_API_KEY=devkey`
+- `LIVEKIT_API_SECRET=devsecret`
+- `LIVEKIT_URL=ws://localhost:7880`
+- Local LiveKit RTC traffic uses UDP ports `40000-40100` to avoid Windows ephemeral-port conflicts.
+
 ## Endpoints
 
 - `GET /health`
 - `GET /livekit/token?room=roomName&identity=userName`
 - `POST /soravm/stt` with `audio_file` upload and optional `language`
 - `POST /soravm/tts` with `text` and optional `voice`
+- `POST /voice/turn` with a transcript and optional voice name
 
 ## Notes
 

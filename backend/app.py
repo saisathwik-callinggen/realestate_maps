@@ -1,7 +1,6 @@
 import base64
 import os
 import time
-from urllib import response
 import uuid
 
 import google.generativeai as genai
@@ -19,6 +18,15 @@ LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
 LIVEKIT_URL = os.getenv("LIVEKIT_URL", "ws://localhost:7880")
 SORAVM_API_KEY = os.getenv("SORAVM_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash-lite")
+GEMINI_MODEL_FALLBACKS = [
+    model.strip()
+    for model in os.getenv(
+        "GEMINI_MODEL_FALLBACKS",
+        "models/gemini-flash-lite-latest,models/gemini-flash-latest,models/gemini-2.5-flash",
+    ).split(",")
+    if model.strip()
+]
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
@@ -27,14 +35,8 @@ app = FastAPI(title="RealEstateAgent Voice Pipeline")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://localhost:4173",
-        "http://127.0.0.1:4173",
-    ],
+    allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -124,9 +126,38 @@ def build_real_estate_reply(transcript: str) -> str:
     )
 
 
-def generate_gemini_reply(transcript: str) -> str:
+def extract_gemini_text(response) -> str:
+    try:
+        if response.text:
+            return response.text.strip()
+    except ValueError:
+        pass
+
+    for candidate in getattr(response, "candidates", []) or []:
+        content = getattr(candidate, "content", None)
+        if not content:
+            continue
+
+        parts = getattr(content, "parts", None) or []
+        text_parts = [getattr(part, "text", "") or "" for part in parts]
+        combined = "".join(text_parts).strip()
+        if combined:
+            return combined
+
+    return ""
+
+
+def gemini_model_candidates() -> list[str]:
+    models: list[str] = []
+    for model_name in [GEMINI_MODEL, *GEMINI_MODEL_FALLBACKS]:
+        if model_name and model_name not in models:
+            models.append(model_name)
+    return models
+
+
+def generate_gemini_reply(transcript: str) -> tuple[str, str]:
     if not GEMINI_API_KEY:
-        return build_real_estate_reply(transcript)
+        return build_real_estate_reply(transcript), "fallback"
 
     prompt = (
         "You are a helpful real estate assistant. Respond concisely and naturally to the user query. "
@@ -134,21 +165,24 @@ def generate_gemini_reply(transcript: str) -> str:
         f"User query: {transcript}"
     )
 
-    model = genai.GenerativeModel("models/gemini-2.5-flash")
-    response = model.generate_content(prompt)
+    last_error = "Unknown Gemini error"
 
-    output_text = ""
-    if hasattr(response, "text") and response.text:
-        output_text = response.text
-    elif getattr(response, "candidates", None):
-        for candidate in response.candidates:
-            candidate_text = getattr(candidate, "content", None) or getattr(candidate, "text", None)
-            if candidate_text:
-                output_text += candidate_text
-    elif getattr(response, "parts", None):
-        output_text = "".join(getattr(part, "text", "") or "" for part in response.parts)
+    for model_name in gemini_model_candidates():
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            output_text = extract_gemini_text(response)
+            if output_text:
+                print(f"Gemini reply generated with {model_name}")
+                return output_text, model_name
+            last_error = f"{model_name} returned an empty response"
+            print(f"Gemini empty response from {model_name}, trying next model")
+        except Exception as exc:
+            last_error = str(exc)
+            print(f"Gemini generation failed for {model_name}: {exc}")
 
-    return output_text.strip() or build_real_estate_reply(transcript)
+    print(f"Gemini generation failed for all models, falling back to local reply: {last_error}")
+    return build_real_estate_reply(transcript), "fallback"
 
 
 def create_livekit_token(room_name: str, identity: str) -> str:
@@ -227,6 +261,13 @@ async def soravm_tts(text: str = Form(...), voice: str = Form("default")):
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail=response.text)
 
+    if response.headers.get("content-type", "").startswith("application/json"):
+        body = response.json()
+        audios = body.get("audios")
+        if not audios or not isinstance(audios, list) or not isinstance(audios[0], str):
+            raise HTTPException(status_code=502, detail=f"TTS service returned invalid JSON payload: {body}")
+        return {"audio_base64": audios[0], "audio_mime_type": "audio/wav"}
+
     content_type = tts_content_type(response)
     if not content_type.startswith("audio/"):
         raise HTTPException(status_code=502, detail="TTS service returned a non-audio response")
@@ -238,7 +279,7 @@ async def soravm_tts(text: str = Form(...), voice: str = Form("default")):
 
 @app.post("/voice/turn")
 async def voice_turn(turn: VoiceTurnRequest):
-    response_text = generate_gemini_reply(turn.transcript)
+    response_text, reply_source = generate_gemini_reply(turn.transcript)
 
     response = requests.post(
         "https://api.sarvam.ai/text-to-speech",
@@ -254,21 +295,26 @@ async def voice_turn(turn: VoiceTurnRequest):
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail=response.text)
 
-    data = response.json()
-
-    if "audios" not in data or len(data["audios"]) == 0:
-        raise HTTPException(
-            status_code=502,
-            detail="No audio returned from Sarvam TTS"
-        )
-
-    audio_base64 = data["audios"][0]
+    if response.headers.get("content-type", "").startswith("application/json"):
+        body = response.json()
+        audios = body.get("audios")
+        if not audios or not isinstance(audios, list) or not isinstance(audios[0], str):
+            raise HTTPException(status_code=502, detail=f"No audio returned from Soravm TTS: {body}")
+        audio_base64 = audios[0]
+        audio_mime_type = "audio/wav"
+    else:
+        content_type = tts_content_type(response)
+        if not content_type.startswith("audio/"):
+            raise HTTPException(status_code=502, detail="TTS service returned a non-audio response")
+        audio_base64 = base64.b64encode(response.content).decode("utf-8")
+        audio_mime_type = content_type
 
     return {
         "transcript": turn.transcript,
         "response_text": response_text,
+        "reply_source": reply_source,
         "audio_base64": audio_base64,
-        "audio_mime_type": "audio/wav",
+        "audio_mime_type": audio_mime_type,
         "language": turn.language,
         "voice": turn.voice,
     }

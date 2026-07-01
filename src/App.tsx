@@ -31,6 +31,11 @@ function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const audioUrlRef = useRef<string | null>(null)
   const chunksRef = useRef<Blob[]>([])
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const silenceTimerRef = useRef<number | null>(null)
+  const monitorFrameRef = useRef<number | null>(null)
+  const listeningRef = useRef(false)
 
   const [roomName, setRoomName] = useState(defaultRoom)
   const [identity, setIdentity] = useState(defaultIdentity)
@@ -38,7 +43,7 @@ function App() {
   const [config, setConfig] = useState<BackendConfig | null>(null)
   const [status, setStatus] = useState('Ready to connect')
   const [connected, setConnected] = useState(false)
-  const [recording, setRecording] = useState(false)
+  const [listening, setListening] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [replyText, setReplyText] = useState('')
   const [manualTranscript, setManualTranscript] = useState(
@@ -110,6 +115,122 @@ function App() {
     return stream
   }
 
+  const stopSilenceMonitor = () => {
+    if (monitorFrameRef.current !== null) {
+      window.cancelAnimationFrame(monitorFrameRef.current)
+      monitorFrameRef.current = null
+    }
+
+    if (silenceTimerRef.current !== null) {
+      window.clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
+  }
+
+  const startSilenceMonitor = () => {
+    const audioContext = audioContextRef.current ?? new AudioContext()
+    const stream = streamRef.current
+    if (!stream) {
+      return
+    }
+
+    audioContextRef.current = audioContext
+
+    if (!analyserRef.current) {
+      const source = audioContext.createMediaStreamSource(stream)
+      const analyser = audioContext.createAnalyser()
+      analyser.fftSize = 2048
+      source.connect(analyser)
+      analyserRef.current = analyser
+    }
+
+    const probe = () => {
+      const analyser = analyserRef.current
+      if (!analyser) {
+        return
+      }
+
+      const buffer = new Float32Array(analyser.fftSize)
+      analyser.getFloatTimeDomainData(buffer)
+      const rms = Math.sqrt(buffer.reduce((sum, value) => sum + value * value, 0) / buffer.length)
+
+      if (rms > 0.025) {
+        if (silenceTimerRef.current !== null) {
+          window.clearTimeout(silenceTimerRef.current)
+        }
+
+        silenceTimerRef.current = window.setTimeout(() => {
+          if (recorderRef.current?.state === 'recording') {
+            recorderRef.current.stop()
+          }
+        }, 500)
+      }
+
+      monitorFrameRef.current = window.requestAnimationFrame(probe)
+    }
+
+    if (monitorFrameRef.current === null) {
+      monitorFrameRef.current = window.requestAnimationFrame(probe)
+    }
+  }
+
+  const startRecordingSegment = async () => {
+    if (!streamRef.current) {
+      await ensureRecordingStream()
+    }
+
+    if (!streamRef.current) {
+      throw new Error('No media stream available')
+    }
+
+    const recorder = new MediaRecorder(streamRef.current, {
+      mimeType: 'audio/webm',
+    })
+
+    chunksRef.current = []
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        chunksRef.current.push(event.data)
+      }
+    }
+
+    recorder.onstop = async () => {
+      stopSilenceMonitor()
+      recorderRef.current = null
+
+      const blob = new Blob(chunksRef.current, {
+        type: 'audio/webm',
+      })
+      chunksRef.current = []
+
+      try {
+        await handleRecordedBlob(blob)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to process audio'
+        setStatus(message)
+        appendTurn('system', message)
+      }
+
+      if (listeningRef.current) {
+        setStatus('Listening for your next question...')
+        try {
+          await startRecordingSegment()
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unable to restart listening'
+          setStatus(message)
+          appendTurn('system', message)
+          setListeningState(false)
+        }
+      }
+    }
+
+    recorderRef.current = recorder
+    recorder.start()
+    setStatus('Recording your question...')
+    startSilenceMonitor()
+  }
+
   const connectRoom = async () => {
     try {
       setStatus('Requesting LiveKit token...')
@@ -165,11 +286,19 @@ function App() {
       recorderRef.current.stop()
     }
 
+    stopSilenceMonitor()
+
     recorderRef.current = null
     chunksRef.current = []
 
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => null)
+      audioContextRef.current = null
+      analyserRef.current = null
+    }
 
     if (room) {
       room.removeAllListeners()
@@ -178,7 +307,7 @@ function App() {
     }
 
     setConnected(false)
-    setRecording(false)
+    setListening(false)
   }
 
   const base64ToBytes = (audioBase64: string) => {
@@ -205,8 +334,27 @@ function App() {
     const audioBlob = new Blob([base64ToBytes(audioBase64)], { type: audioMimeType })
     const audioUrl = URL.createObjectURL(audioBlob)
     audioUrlRef.current = audioUrl
-    audioRef.current.src = audioUrl
-    await audioRef.current.play()
+    const audioEl = audioRef.current
+    audioEl.src = audioUrl
+
+    await audioEl.play()
+
+    await new Promise<void>((resolve, reject) => {
+      const handleEnded = () => {
+        cleanup()
+        resolve()
+      }
+      const handleError = () => {
+        cleanup()
+        reject(new Error('Audio playback failed'))
+      }
+      const cleanup = () => {
+        audioEl.removeEventListener('ended', handleEnded)
+        audioEl.removeEventListener('error', handleError)
+      }
+      audioEl.addEventListener('ended', handleEnded)
+      audioEl.addEventListener('error', handleError)
+    })
   }
 
   const sendVoiceTurn = async (text: string) => {
@@ -259,11 +407,19 @@ function App() {
     setStatus('Reply played locally')
   }
 
+  const setListeningState = (value: boolean) => {
+    listeningRef.current = value
+    setListening(value)
+  }
+
   const toggleRecording = async () => {
-    if (recording) {
-      recorderRef.current?.stop()
-      setRecording(false)
-      setStatus('Processing recorded audio...')
+    if (listeningRef.current) {
+      setListeningState(false)
+      stopSilenceMonitor()
+      if (recorderRef.current?.state === 'recording') {
+        recorderRef.current.stop()
+      }
+      setStatus('Stopped listening')
       return
     }
 
@@ -272,41 +428,15 @@ function App() {
         await connectRoom()
       }
 
-      const stream = await ensureRecordingStream()
-      const recorder = new MediaRecorder(stream, {
-  mimeType: "audio/webm",
-})
-      chunksRef.current = []
-
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunksRef.current.push(event.data)
-        }
-      }
-
-      recorder.onstop = async () => {
-        const blob = new Blob(chunksRef.current, {
-  type: "audio/webm",
-})
-        chunksRef.current = []
-
-        try {
-          await handleRecordedBlob(blob)
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Failed to process audio'
-          setStatus(message)
-          appendTurn('system', message)
-        }
-      }
-
-      recorderRef.current = recorder
-      recorder.start()
-      setRecording(true)
-      setStatus('Recording your question...')
+      await ensureRecordingStream()
+      setStatus('Listening for your question...')
+      setListeningState(true)
+      await startRecordingSegment()
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to start recording'
       setStatus(message)
       appendTurn('system', message)
+      setListeningState(false)
     }
   }
 
@@ -412,7 +542,7 @@ function App() {
                   Disconnect
                 </button>
                 <button type="button" className="accent-button" onClick={toggleRecording}>
-                  {recording ? 'Stop recording' : 'Record question'}
+                  {listening ? 'Stop listening' : 'Record question'}
                 </button>
               </div>
             </div>
@@ -423,7 +553,7 @@ function App() {
                   <p className="console-label">Pipeline output</p>
                   <h2>Speech turn</h2>
                 </div>
-                <span className={recording ? 'wave-dot wave-dot-live' : 'wave-dot'} />
+                <span className={listening ? 'wave-dot wave-dot-live' : 'wave-dot'} />
               </div>
 
               <div className="turn-stack">

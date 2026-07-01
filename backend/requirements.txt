@@ -4,3 +4,4 @@ python-dotenv
 requests
 pyjwt
 python-multipart
+google-generativeai

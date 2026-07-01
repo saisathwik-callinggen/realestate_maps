@@ -4,6 +4,7 @@ import time
 from urllib import response
 import uuid
 
+import google.generativeai as genai
 import jwt
 import requests
 from dotenv import load_dotenv
@@ -17,6 +18,10 @@ LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
 LIVEKIT_URL = os.getenv("LIVEKIT_URL", "ws://localhost:7880")
 SORAVM_API_KEY = os.getenv("SORAVM_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI(title="RealEstateAgent Voice Pipeline")
 
@@ -119,6 +124,33 @@ def build_real_estate_reply(transcript: str) -> str:
     )
 
 
+def generate_gemini_reply(transcript: str) -> str:
+    if not GEMINI_API_KEY:
+        return build_real_estate_reply(transcript)
+
+    prompt = (
+        "You are a helpful real estate assistant. Respond concisely and naturally to the user query. "
+        "Keep the answer focused on property search, budgets, locations, amenities, or site visits. "
+        f"User query: {transcript}"
+    )
+
+    model = genai.GenerativeModel("models/gemini-2.5-flash")
+    response = model.generate_content(prompt)
+
+    output_text = ""
+    if hasattr(response, "text") and response.text:
+        output_text = response.text
+    elif getattr(response, "candidates", None):
+        for candidate in response.candidates:
+            candidate_text = getattr(candidate, "content", None) or getattr(candidate, "text", None)
+            if candidate_text:
+                output_text += candidate_text
+    elif getattr(response, "parts", None):
+        output_text = "".join(getattr(part, "text", "") or "" for part in response.parts)
+
+    return output_text.strip() or build_real_estate_reply(transcript)
+
+
 def create_livekit_token(room_name: str, identity: str) -> str:
     api_key = require_env("LIVEKIT_API_KEY")
     api_secret = require_env("LIVEKIT_API_SECRET")
@@ -150,6 +182,7 @@ async def health_check():
         "status": "ok",
         "livekit_configured": bool(LIVEKIT_API_KEY and LIVEKIT_API_SECRET),
         "soravm_configured": bool(SORAVM_API_KEY),
+        "gemini_configured": bool(GEMINI_API_KEY),
     }
 
 
@@ -159,6 +192,7 @@ async def config():
         "livekit_url": LIVEKIT_URL,
         "livekit_configured": bool(LIVEKIT_API_KEY and LIVEKIT_API_SECRET),
         "soravm_configured": bool(SORAVM_API_KEY),
+        "gemini_configured": bool(GEMINI_API_KEY),
     }
 
 
@@ -203,9 +237,8 @@ async def soravm_tts(text: str = Form(...), voice: str = Form("default")):
 
 
 @app.post("/voice/turn")
-@app.post("/voice/turn")
 async def voice_turn(turn: VoiceTurnRequest):
-    response_text = build_real_estate_reply(turn.transcript)
+    response_text = generate_gemini_reply(turn.transcript)
 
     response = requests.post(
         "https://api.sarvam.ai/text-to-speech",
@@ -239,42 +272,3 @@ async def voice_turn(turn: VoiceTurnRequest):
         "language": turn.language,
         "voice": turn.voice,
     }
-    try:
-        response_text = build_real_estate_reply(turn.transcript)
-
-        response = requests.post(
-            "https://api.sarvam.ai/text-to-speech",
-            headers={**soravm_headers(), "Content-Type": "application/json"},
-            json={
-                "text": response_text,
-                "voice": turn.voice,
-                "format": "wav",
-            },
-            timeout=120,
-        )
-
-        print("Status:", response.status_code)
-        print("Headers:", response.headers)
-        print("Content-Type:", response.headers.get("Content-Type"))
-
-        content_type = tts_content_type(response)
-        print("Detected:", content_type)
-
-        audio_bytes = response.content
-        print("Audio length:", len(audio_bytes))
-
-        audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
-
-        return {
-            "transcript": turn.transcript,
-            "response_text": response_text,
-            "audio_base64": audio_base64,
-            "audio_mime_type": content_type,
-            "language": turn.language,
-            "voice": turn.voice,
-        }
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))

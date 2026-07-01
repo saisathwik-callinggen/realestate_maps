@@ -17,6 +17,7 @@ type VoiceTurnResponse = {
   transcript?: string
   response_text?: string
   audio_base64?: string
+  audio_mime_type?: string
 }
 
 const backendBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
@@ -28,6 +29,7 @@ function App() {
   const recorderRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const audioUrlRef = useRef<string | null>(null)
   const chunksRef = useRef<Blob[]>([])
 
   const [roomName, setRoomName] = useState(defaultRoom)
@@ -179,12 +181,31 @@ function App() {
     setRecording(false)
   }
 
-  const playResponseAudio = async (audioBase64?: string) => {
+  const base64ToBytes = (audioBase64: string) => {
+    const binaryString = atob(audioBase64)
+    const bytes = new Uint8Array(binaryString.length)
+
+    for (let index = 0; index < binaryString.length; index += 1) {
+      bytes[index] = binaryString.charCodeAt(index)
+    }
+
+    return bytes
+  }
+
+  const playResponseAudio = async (audioBase64?: string, audioMimeType = 'audio/wav') => {
     if (!audioBase64 || !audioRef.current) {
       return
     }
 
-    audioRef.current.src = `data:audio/wav;base64,${audioBase64}`
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current)
+      audioUrlRef.current = null
+    }
+
+    const audioBlob = new Blob([base64ToBytes(audioBase64)], { type: audioMimeType })
+    const audioUrl = URL.createObjectURL(audioBlob)
+    audioUrlRef.current = audioUrl
+    audioRef.current.src = audioUrl
     await audioRef.current.play()
   }
 
@@ -234,7 +255,7 @@ function App() {
     const voiceTurn = await sendVoiceTurn(recognizedText)
     setReplyText(voiceTurn.response_text ?? '')
     appendTurn('assistant', voiceTurn.response_text ?? '')
-    await playResponseAudio(voiceTurn.audio_base64)
+    await playResponseAudio(voiceTurn.audio_base64, voiceTurn.audio_mime_type)
     setStatus('Reply played locally')
   }
 
@@ -299,7 +320,7 @@ function App() {
       const voiceTurn = await sendVoiceTurn(manualTranscript)
       setReplyText(voiceTurn.response_text ?? '')
       appendTurn('assistant', voiceTurn.response_text ?? '')
-      await playResponseAudio(voiceTurn.audio_base64)
+      await playResponseAudio(voiceTurn.audio_base64, voiceTurn.audio_mime_type)
       setStatus('Reply played locally')
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to generate reply'
@@ -327,6 +348,7 @@ function App() {
               <span className={`status-pill ${connected ? 'status-pill-live' : ''}`}>
                 {status}
               </span>
+                {/* console.log('Status:', status) */}
               <span className="status-pill status-pill-muted">
                 LiveKit {config?.livekit_configured ? 'configured' : 'not configured'}
               </span>

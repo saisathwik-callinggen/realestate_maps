@@ -349,6 +349,37 @@ body {
   overflow: hidden;
 }
 
+/* ── End Conversation button ── */
+.end-convo-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 1rem;
+  border-radius: 999px;
+  border: 1.5px solid rgba(239, 68, 68, 0.6);
+  background: linear-gradient(135deg, rgba(220, 38, 38, 0.18) 0%, rgba(239, 68, 68, 0.08) 100%);
+  color: #fca5a5;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  animation: endBtnPulse 2s infinite;
+}
+
+.end-convo-btn:hover {
+  background: linear-gradient(135deg, rgba(220, 38, 38, 0.35) 0%, rgba(239, 68, 68, 0.18) 100%);
+  border-color: rgba(239, 68, 68, 0.9);
+  color: #ffffff;
+  box-shadow: 0 0 14px rgba(239, 68, 68, 0.35);
+  transform: scale(1.04);
+}
+
+@keyframes endBtnPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.18); }
+}
+
 /* ── Settings Panel Dropdown ── */
 .settings-panel {
   padding: 1.25rem 1.5rem;
@@ -656,9 +687,9 @@ body {
 
 .cyber-pin-label-text {
   font-family: var(--font-mono);
-  font-size: 7px;
+  font-size: 10.5px;
   font-weight: 700;
-  fill: #64748b;
+  fill: #cbd5e1;
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
@@ -681,80 +712,7 @@ body {
 }
 
 .cyber-map-pin-focused .cyber-pin-label-text {
-  fill: #a78bfa;
-}
-
-/* AR HUD Glass overlay inside Map */
-.map-hud-chat-overlay {
-  position: absolute;
-  bottom: 0.75rem;
-  left: 0.75rem;
-  right: 0.75rem;
-  background: rgba(15, 23, 42, 0.55);
-  border: 1px solid var(--border);
-  border-radius: 0.75rem;
-  padding: 0.75rem 1rem;
-  backdrop-filter: blur(8px);
-  pointer-events: none;
-}
-
-.hud-overlay-header {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin-bottom: 0.45rem;
-  border-bottom: 1px solid rgba(255,255,255,0.04);
-  padding-bottom: 0.35rem;
-}
-
-.hud-dot-active {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent-rose);
-  animation: pulseOuterRing 1.5s infinite;
-}
-
-.hud-overlay-header h4 {
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  font-weight: 700;
-  color: #64748b;
-  margin: 0;
-  letter-spacing: 0.05em;
-}
-
-.hud-overlay-feed {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.hud-overlay-empty {
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  color: #475569;
-}
-
-.hud-overlay-msg {
-  display: flex;
-  gap: 0.45rem;
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  line-height: 1.35;
-}
-
-.hud-msg-label {
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
-.hud-msg-user .hud-msg-label { color: var(--accent-cyan); }
-.hud-msg-assistant .hud-msg-label { color: var(--accent-rose); }
-
-.hud-overlay-msg p {
-  margin: 0;
-  color: #94a3b8;
+  fill: #c084fc;
 }
 
 /* Statistics metrics grid */

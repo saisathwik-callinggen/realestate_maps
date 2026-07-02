@@ -112,6 +112,11 @@ function App() {
   const silenceTimerRef = useRef<number | null>(null)
   const monitorFrameRef = useRef<number | null>(null)
   const listeningRef = useRef(false)
+  // Guards against ambient-noise phantom turns:
+  // speechStartedRef tracks the timestamp when voice first crossed the threshold.
+  // A turn is only submitted once ≥800 ms of continuous speech is detected.
+  const speechStartedRef = useRef<number | null>(null)
+  const MIN_SPEECH_MS = 800
 
   // Web Audio playback analysis
   const playbackAnalyserRef = useRef<AnalyserNode | null>(null)
@@ -270,16 +275,44 @@ function App() {
       analyser.getFloatTimeDomainData(buffer)
       const rms = Math.sqrt(buffer.reduce((sum, value) => sum + value * value, 0) / buffer.length)
 
-      if (rms > 0.025) {
-        if (silenceTimerRef.current !== null) {
-          window.clearTimeout(silenceTimerRef.current)
+      // Raised threshold (0.04) to ignore ambient hiss/background noise.
+      // Only start tracking speech onset once we cross this level.
+      const VOICE_THRESHOLD = 0.04
+
+      if (rms > VOICE_THRESHOLD) {
+        // Mark when speech first started
+        if (speechStartedRef.current === null) {
+          speechStartedRef.current = Date.now()
         }
 
-        silenceTimerRef.current = window.setTimeout(() => {
-          if (recorderRef.current?.state === 'recording') {
-            recorderRef.current.stop()
-          }
-        }, 500)
+        // Reset any pending silence timer (user is still speaking)
+        if (silenceTimerRef.current !== null) {
+          window.clearTimeout(silenceTimerRef.current)
+          silenceTimerRef.current = null
+        }
+      } else {
+        // Voice dropped below threshold — only submit if we had ≥800ms of real speech
+        const speechDuration = speechStartedRef.current !== null
+          ? Date.now() - speechStartedRef.current
+          : 0
+
+        if (
+          speechStartedRef.current !== null &&
+          speechDuration >= MIN_SPEECH_MS &&
+          silenceTimerRef.current === null
+        ) {
+          // Arm a 600ms silence timeout before stopping.
+          // Do NOT clear speechStartedRef here — onstop reads it to decide
+          // whether to submit the blob, then resets it itself.
+          silenceTimerRef.current = window.setTimeout(() => {
+            silenceTimerRef.current = null
+            if (recorderRef.current?.state === 'recording') {
+              recorderRef.current.stop()
+            }
+          }, 600)
+        } else if (speechStartedRef.current === null) {
+          // No real speech yet — ignore ambient noise entirely
+        }
       }
 
       monitorFrameRef.current = window.requestAnimationFrame(probe)
@@ -320,12 +353,20 @@ function App() {
       })
       chunksRef.current = []
 
-      try {
-        await handleRecordedBlob(blob)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to process audio'
-        setStatus(message)
-        appendTurn('system', message)
+      // Only call the backend if there was enough real speech detected.
+      // If speechStartedRef is null it means we never crossed the voice threshold
+      // (ambient noise only) — skip the API call entirely.
+      const hadRealSpeech = speechStartedRef.current !== null
+      speechStartedRef.current = null
+
+      if (hadRealSpeech) {
+        try {
+          await handleRecordedBlob(blob)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to process audio'
+          setStatus(message)
+          appendTurn('system', message)
+        }
       }
 
       if (listeningRef.current) {
@@ -777,6 +818,40 @@ function App() {
             </div>
 
             <div className="hud-header-actions">
+              {/* End Conversation button — visible when listening OR speaking OR processing */}
+              {(listening || isSpeaking || isProcessing) && (
+                <button
+                  type="button"
+                  id="end-conversation-btn"
+                  className="end-convo-btn"
+                  aria-label="End Conversation"
+                  onClick={() => {
+                    // Stop listening loop
+                    setListeningState(false)
+                    stopSilenceMonitor()
+                    speechStartedRef.current = null
+                    if (recorderRef.current?.state === 'recording') {
+                      recorderRef.current.stop()
+                    }
+                    recorderRef.current = null
+                    chunksRef.current = []
+                    // Stop any playing audio immediately
+                    if (audioRef.current) {
+                      audioRef.current.pause()
+                      audioRef.current.currentTime = 0
+                    }
+                    setIsSpeaking(false)
+                    setIsProcessing(false)
+                    setStatus('Conversation Ended')
+                    appendTurn('system', 'Conversation ended by user.')
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="14" height="14">
+                    <rect x="3" y="3" width="18" height="18" rx="3" />
+                  </svg>
+                  End Conversation
+                </button>
+              )}
               {/* Light/Dark toggle mock */}
               <button type="button" className="header-action-btn" aria-label="Toggle Theme">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" width="16" height="16">
@@ -837,7 +912,7 @@ function App() {
                   Teardown
                 </button>
                 <span className="connection-badge">
-                  {connected ? '● LIVE' : '○ OFFLINE'} | Status: {status} | LiveKit: {config?.livekit_configured ? 'OK' : 'OFF'} | Sarvam: {config?.soravm_configured ? 'OK' : 'OFF'}
+                  {connected ? '● LIVE' : '○ OFFLINE'} | Status: {status} | LiveKit: {config?.livekit_configured ? 'OK' : 'OFF'} | Sarvam: {config?.soravm_configured ? 'OK' : 'OFF'} | Turns: {conversationTurns.length}
                 </span>
               </div>
             </section>
@@ -988,9 +1063,9 @@ function App() {
                           <circle cx={px} cy={py} r={isFocused ? 6 : 4} className="cyber-pin-dot" />
                           
                           {/* Floating Location Tag text */}
-                          <g transform={`translate(${px}, ${py - 14})`}>
-                            <rect x="-38" y="-10" width="76" height="15" rx="3" className="cyber-pin-label-box" />
-                            <text x="0" y="0" textAnchor="middle" className="cyber-pin-label-text">
+                          <g transform={`translate(${px}, ${py - 16})`}>
+                            <rect x="-45" y="-13" width="90" height="18" rx="4" className="cyber-pin-label-box" />
+                            <text x="0" y="0" dy="3.5" textAnchor="middle" className="cyber-pin-label-text">
                               {node.name}
                             </text>
                           </g>
@@ -998,26 +1073,6 @@ function App() {
                       )
                     })}
                   </svg>
-
-                  {/* AR HUD glassmorphic Chat overlay on the map container */}
-                  <div className="map-hud-chat-overlay">
-                    <div className="hud-overlay-header">
-                      <span className="hud-dot-active" />
-                      <h4>ASSISTANT LOG CONSOLE</h4>
-                    </div>
-                    <div className="hud-overlay-feed">
-                      {conversationTurns.length === 0 ? (
-                        <span className="hud-overlay-empty">CONSOLE IDLE // AWAITING COMMAND</span>
-                      ) : (
-                        conversationTurns.slice(-2).map((t, idx) => (
-                          <div key={idx} className={`hud-overlay-msg hud-msg-${t.role}`}>
-                            <span className="hud-msg-label">{t.role === 'user' ? 'USR' : 'SYS'} //</span>
-                            <p>{t.text}</p>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
                 </div>
               </div>
 

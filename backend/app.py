@@ -3,7 +3,10 @@ import os
 import time
 import uuid
 
-import google.generativeai as genai
+# ── Gemini (commented out — kept for rollback) ──────────────────────────────
+# import google.generativeai as genai
+# ─────────────────────────────────────────────────────────────────────────────
+
 import jwt
 import requests
 from dotenv import load_dotenv
@@ -17,19 +20,27 @@ LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
 LIVEKIT_URL = os.getenv("LIVEKIT_URL", "ws://localhost:7880")
 SORAVM_API_KEY = os.getenv("SORAVM_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash-lite")
-GEMINI_MODEL_FALLBACKS = [
-    model.strip()
-    for model in os.getenv(
-        "GEMINI_MODEL_FALLBACKS",
-        "models/gemini-flash-lite-latest,models/gemini-flash-latest,models/gemini-2.5-flash",
-    ).split(",")
-    if model.strip()
-]
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+# ── DeepSeek (active) ────────────────────────────────────────────────────────
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_MODEL   = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_BASE_URL = "https://api.deepseek.com/chat/completions"
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Gemini env vars (commented out — kept for rollback) ─────────────────────
+# GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash-lite")
+# GEMINI_MODEL_FALLBACKS = [
+#     model.strip()
+#     for model in os.getenv(
+#         "GEMINI_MODEL_FALLBACKS",
+#         "models/gemini-flash-lite-latest,models/gemini-flash-latest,models/gemini-2.5-flash",
+#     ).split(",")
+#     if model.strip()
+# ]
+# if GEMINI_API_KEY:
+#     genai.configure(api_key=GEMINI_API_KEY)
+# ─────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="RealEstateAgent Voice Pipeline")
 
@@ -46,6 +57,15 @@ class VoiceTurnRequest(BaseModel):
     transcript: str
     voice: str = "default"
     language: str = "en-US"
+    session_id: str = "default"   # unique per browser session
+
+
+# In-memory conversation store  { session_id -> [messages] }
+# Each message is a dict like {"role": "user" | "assistant", "content": "..."}
+# We cap history at MAX_HISTORY_MESSAGES (pairs of user+assistant turns) so
+# the context window never blows up.
+MAX_HISTORY_MESSAGES = 20   # = 10 user turns + 10 assistant turns
+conversation_store: dict[str, list[dict]] = {}
 
 
 def require_env(name: str) -> str:
@@ -126,63 +146,120 @@ def build_real_estate_reply(transcript: str) -> str:
     )
 
 
-def extract_gemini_text(response) -> str:
-    try:
-        if response.text:
-            return response.text.strip()
-    except ValueError:
-        pass
+# ── Gemini helpers (commented out — kept for rollback) ───────────────────────
+# def extract_gemini_text(response) -> str:
+#     try:
+#         if response.text:
+#             return response.text.strip()
+#     except ValueError:
+#         pass
+#     for candidate in getattr(response, "candidates", []) or []:
+#         content = getattr(candidate, "content", None)
+#         if not content:
+#             continue
+#         parts = getattr(content, "parts", None) or []
+#         text_parts = [getattr(part, "text", "") or "" for part in parts]
+#         combined = "".join(text_parts).strip()
+#         if combined:
+#             return combined
+#     return ""
+#
+# def gemini_model_candidates() -> list[str]:
+#     models: list[str] = []
+#     for model_name in [GEMINI_MODEL, *GEMINI_MODEL_FALLBACKS]:
+#         if model_name and model_name not in models:
+#             models.append(model_name)
+#     return models
+#
+# def generate_gemini_reply(transcript: str) -> tuple[str, str]:
+#     if not GEMINI_API_KEY:
+#         return build_real_estate_reply(transcript), "fallback"
+#     prompt = (
+#         "You are a helpful real estate assistant. Respond concisely and naturally to the user query. "
+#         "Keep the answer focused on property search, budgets, locations, amenities, or site visits. "
+#         f"User query: {transcript}"
+#     )
+#     last_error = "Unknown Gemini error"
+#     for model_name in gemini_model_candidates():
+#         try:
+#             model = genai.GenerativeModel(model_name)
+#             response = model.generate_content(prompt)
+#             output_text = extract_gemini_text(response)
+#             if output_text:
+#                 print(f"Gemini reply generated with {model_name}")
+#                 return output_text, model_name
+#             last_error = f"{model_name} returned an empty response"
+#             print(f"Gemini empty response from {model_name}, trying next model")
+#         except Exception as exc:
+#             last_error = str(exc)
+#             print(f"Gemini generation failed for {model_name}: {exc}")
+#     print(f"Gemini generation failed for all models, falling back: {last_error}")
+#     return build_real_estate_reply(transcript), "fallback"
+# ─────────────────────────────────────────────────────────────────────────────
 
-    for candidate in getattr(response, "candidates", []) or []:
-        content = getattr(candidate, "content", None)
-        if not content:
-            continue
 
-        parts = getattr(content, "parts", None) or []
-        text_parts = [getattr(part, "text", "") or "" for part in parts]
-        combined = "".join(text_parts).strip()
-        if combined:
-            return combined
-
-    return ""
-
-
-def gemini_model_candidates() -> list[str]:
-    models: list[str] = []
-    for model_name in [GEMINI_MODEL, *GEMINI_MODEL_FALLBACKS]:
-        if model_name and model_name not in models:
-            models.append(model_name)
-    return models
-
-
-def generate_gemini_reply(transcript: str) -> tuple[str, str]:
-    if not GEMINI_API_KEY:
+# ── DeepSeek LLM (active) ────────────────────────────────────────────────────
+def generate_deepseek_reply(
+    transcript: str,
+    history: list[dict],
+) -> tuple[str, str]:
+    """Call DeepSeek's OpenAI-compatible chat completions endpoint.
+    `history` is the full message list for this session (excluding the current
+    user message — we append it inside this function).
+    Falls back to the local rule-based reply if the API key is missing
+    or the call fails.
+    """
+    if not DEEPSEEK_API_KEY:
+        print("DEEPSEEK_API_KEY not set — using local fallback reply")
         return build_real_estate_reply(transcript), "fallback"
 
-    prompt = (
-        "You are a helpful real estate assistant. Respond concisely and naturally to the user query. "
-        "Keep the answer focused on property search, budgets, locations, amenities, or site visits. "
-        f"User query: {transcript}"
+    system_prompt = (
+        "You are a concise, helpful real estate assistant for the Indian market. "
+        "Remember everything the user has told you in this conversation — their budget, "
+        "preferred location, property type, number of bedrooms, and any other preferences. "
+        "Use that context in every reply without asking for information already given. "
+        "Answer only questions about property search, budgets, locations, amenities, "
+        "EMI, or site visits. Keep replies under 3 sentences."
     )
 
-    last_error = "Unknown Gemini error"
+    messages = [
+        {"role": "system", "content": system_prompt},
+        *history,                                    # previous turns
+        {"role": "user", "content": transcript},     # current user message
+    ]
 
-    for model_name in gemini_model_candidates():
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            output_text = extract_gemini_text(response)
-            if output_text:
-                print(f"Gemini reply generated with {model_name}")
-                return output_text, model_name
-            last_error = f"{model_name} returned an empty response"
-            print(f"Gemini empty response from {model_name}, trying next model")
-        except Exception as exc:
-            last_error = str(exc)
-            print(f"Gemini generation failed for {model_name}: {exc}")
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": messages,
+        "max_tokens": 256,
+        "temperature": 0.7,
+    }
 
-    print(f"Gemini generation failed for all models, falling back to local reply: {last_error}")
-    return build_real_estate_reply(transcript), "fallback"
+    try:
+        resp = requests.post(
+            DEEPSEEK_BASE_URL,
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            print(f"DeepSeek API error {resp.status_code}: {resp.text}")
+            return build_real_estate_reply(transcript), "fallback"
+
+        data = resp.json()
+        reply = data["choices"][0]["message"]["content"].strip()
+        model_used = data.get("model", DEEPSEEK_MODEL)
+        print(f"DeepSeek reply generated with {model_used} (history={len(history)} msgs)")
+        return reply, model_used
+
+    except Exception as exc:
+        print(f"DeepSeek call failed: {exc} — using local fallback")
+        return build_real_estate_reply(transcript), "fallback"
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def create_livekit_token(room_name: str, identity: str) -> str:
@@ -216,7 +293,8 @@ async def health_check():
         "status": "ok",
         "livekit_configured": bool(LIVEKIT_API_KEY and LIVEKIT_API_SECRET),
         "soravm_configured": bool(SORAVM_API_KEY),
-        "gemini_configured": bool(GEMINI_API_KEY),
+        # "gemini_configured": bool(GEMINI_API_KEY),  # rolled back
+        "deepseek_configured": bool(DEEPSEEK_API_KEY),
     }
 
 
@@ -226,7 +304,8 @@ async def config():
         "livekit_url": LIVEKIT_URL,
         "livekit_configured": bool(LIVEKIT_API_KEY and LIVEKIT_API_SECRET),
         "soravm_configured": bool(SORAVM_API_KEY),
-        "gemini_configured": bool(GEMINI_API_KEY),
+        # "gemini_configured": bool(GEMINI_API_KEY),  # rolled back
+        "deepseek_configured": bool(DEEPSEEK_API_KEY),
     }
 
 
@@ -279,7 +358,23 @@ async def soravm_tts(text: str = Form(...), voice: str = Form("default")):
 
 @app.post("/voice/turn")
 async def voice_turn(turn: VoiceTurnRequest):
-    response_text, reply_source = generate_gemini_reply(turn.transcript)
+    # Retrieve or create conversation history for this session
+    session_id = turn.session_id or "default"
+    history = conversation_store.setdefault(session_id, [])
+
+    # ── Active: DeepSeek (with conversation memory) ───────────────────────────
+    response_text, reply_source = generate_deepseek_reply(turn.transcript, history)
+    # ── Rollback: swap the line above with the one below to revert to Gemini ──
+    # response_text, reply_source = generate_gemini_reply(turn.transcript)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Append this turn to the history and trim to the rolling window
+    history.append({"role": "user",      "content": turn.transcript})
+    history.append({"role": "assistant", "content": response_text})
+    if len(history) > MAX_HISTORY_MESSAGES:
+        # Drop oldest pairs from the front, keeping the most recent context
+        excess = len(history) - MAX_HISTORY_MESSAGES
+        del history[:excess]
 
     response = requests.post(
         "https://api.sarvam.ai/text-to-speech",
@@ -318,3 +413,14 @@ async def voice_turn(turn: VoiceTurnRequest):
         "language": turn.language,
         "voice": turn.voice,
     }
+
+
+@app.post("/session/clear")
+async def session_clear(session_id: str = "default"):
+    """Wipe conversation history for the given session.
+    Called by the frontend when the user clicks 'End Conversation'.
+    """
+    removed = session_id in conversation_store
+    conversation_store.pop(session_id, None)
+    print(f"Session cleared: {session_id} (existed={removed})")
+    return {"cleared": removed, "session_id": session_id}

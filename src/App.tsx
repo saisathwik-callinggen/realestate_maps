@@ -1,6 +1,14 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Room, RoomEvent } from 'livekit-client'
 import { SpeakingAvatar } from './components/SpeakingAvatar'
+import { PropertyMap } from './features/map/PropertyMap'
+import { SUPPORTED_CITIES } from './features/map/cityCenters'
+import { ApartmentCard } from './features/properties/ApartmentCard'
+import { ApartmentDetails } from './features/properties/ApartmentDetails'
+import { useApartments } from './features/properties/useApartments'
+import { fetchApartmentsByCity } from './features/properties/api'
+import { detectCityFromText, matchApartmentFromText } from './features/properties/voiceSync'
+import type { Apartment } from './features/properties/types'
 import './App.css'
 
 type VoiceTurn = {
@@ -21,84 +29,12 @@ type VoiceTurnResponse = {
   audio_mime_type?: string
 }
 
-type Property = {
-  id: string
-  name: string
-  location: string
-  price: string
-  type: string
-  tag: 'Premium' | 'Best Value' | 'Luxury'
-  tagClass: string
-}
-
-const RECOMMENDATIONS: Property[] = [
-  {
-    id: 'lodha-panache',
-    name: 'Lodha Panache',
-    location: 'Hinjewadi Phase 1, Pune',
-    price: '₹1.12 Cr Onwards',
-    type: '2 & 3 BHK Apartments',
-    tag: 'Premium',
-    tagClass: 'tag-premium',
-  },
-  {
-    id: 'godrej-park',
-    name: 'Godrej Park World',
-    location: 'Hinjewadi Phase 2, Pune',
-    price: '₹78 L Onwards',
-    type: '2 BHK Apartments',
-    tag: 'Best Value',
-    tagClass: 'tag-value',
-  },
-  {
-    id: 'vtp-skyii',
-    name: 'VTP Skyii High',
-    location: 'Kharadi, Pune',
-    price: '₹1.85 Cr Onwards',
-    type: '3 & 4 BHK Apartments',
-    tag: 'Luxury',
-    tagClass: 'tag-luxury',
-  },
-]
-
-const CITY_MAPS: Record<string, { name: string; x: number; y: number }[]> = {
-  Pune: [
-    { name: 'Hinjewadi', x: 22, y: 40 },
-    { name: 'Baner', x: 50, y: 25 },
-    { name: 'Kharadi', x: 78, y: 35 },
-    { name: 'Bavdhan', x: 30, y: 65 },
-    { name: 'Hadapsar', x: 70, y: 70 },
-    { name: 'Koregaon Park', x: 65, y: 46 },
-  ],
-  Mumbai: [
-    { name: 'Andheri', x: 32, y: 32 },
-    { name: 'Bandra', x: 28, y: 55 },
-    { name: 'Worli', x: 22, y: 72 },
-    { name: 'Thane', x: 74, y: 22 },
-    { name: 'Navi Mumbai', x: 78, y: 62 },
-    { name: 'Colaba', x: 18, y: 88 },
-  ],
-  Delhi: [
-    { name: 'Connaught Place', x: 50, y: 50 },
-    { name: 'Saket', x: 44, y: 74 },
-    { name: 'Dwarka', x: 18, y: 58 },
-    { name: 'Vasant Kunj', x: 32, y: 68 },
-    { name: 'Noida', x: 78, y: 62 },
-    { name: 'Gurugram', x: 16, y: 82 },
-  ],
-  Hyderabad: [
-    { name: 'Gachibowli', x: 24, y: 44 },
-    { name: 'Madhapur', x: 44, y: 34 },
-    { name: 'Jubilee Hills', x: 54, y: 44 },
-    { name: 'Banjara Hills', x: 64, y: 54 },
-    { name: 'Kondapur', x: 28, y: 28 },
-    { name: 'Secunderabad', x: 78, y: 22 },
-  ],
-}
-
 const backendBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
 const defaultRoom = 'real-estate-demo'
 const defaultIdentity = `buyer-${Math.random().toString(36).slice(2, 7)}`
+// A stable session ID for this browser tab — persists across mic on/off cycles
+// but resets when the user clicks "End Conversation".
+const generateSessionId = () => `session-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
 
 function App() {
   const roomRef = useRef<Room | null>(null)
@@ -127,6 +63,9 @@ function App() {
   const [roomName, setRoomName] = useState(defaultRoom)
   const [identity, setIdentity] = useState(defaultIdentity)
   const [voice, setVoice] = useState('default')
+  // sessionId ties all turns in one conversation to the same backend history.
+  // It is replaced with a fresh ID when the user ends the conversation.
+  const [sessionId, setSessionId] = useState(generateSessionId)
   const [config, setConfig] = useState<BackendConfig | null>(null)
   const [status, setStatus] = useState('Ready')
   const [connected, setConnected] = useState(false)
@@ -150,7 +89,53 @@ function App() {
   const [activeSidebar, setActiveSidebar] = useState('Home')
   const [activeCity, setActiveCity] = useState('Pune')
   const [focusedLocationPin, setFocusedLocationPin] = useState('Hinjewadi')
-  const [selectedProperty, setSelectedProperty] = useState<Property>(RECOMMENDATIONS[0])
+  const [selectedApartment, setSelectedApartment] = useState<Apartment | null>(null)
+  const [mapZoomMode, setMapZoomMode] = useState<'overview' | 'property'>('overview')
+
+  const { apartments, loading: apartmentsLoading } = useApartments(activeCity)
+
+  const handleApartmentSelect = useCallback((apartment: Apartment) => {
+    setSelectedApartment(apartment)
+    setFocusedLocationPin(apartment.locality)
+    setMapZoomMode('property')
+  }, [])
+
+  const syncVoiceToUi = useCallback(async (text: string) => {
+    const detectedCity = detectCityFromText(text)
+    const targetCity = detectedCity ?? activeCity
+
+    if (detectedCity) {
+      setActiveCity(detectedCity)
+      setMapZoomMode('overview')
+    }
+
+    const cityApartments = await fetchApartmentsByCity(targetCity)
+    const matched = matchApartmentFromText(text, cityApartments)
+
+    if (matched) {
+      setSelectedApartment(matched)
+      setFocusedLocationPin(matched.locality)
+      setMapZoomMode('property')
+    } else if (detectedCity && cityApartments.length > 0) {
+      setSelectedApartment(cityApartments[0])
+      setFocusedLocationPin(cityApartments[0].locality)
+      setMapZoomMode('overview')
+    }
+
+    return targetCity
+  }, [activeCity])
+
+  useEffect(() => {
+    if (apartments.length === 0) {
+      setSelectedApartment(null)
+      return
+    }
+    setSelectedApartment((prev) => {
+      if (prev && apartments.some((a) => a.id === prev.id)) return prev
+      return apartments[0]
+    })
+    setFocusedLocationPin(apartments[0].locality)
+  }, [activeCity, apartments])
 
   useEffect(() => {
     let active = true
@@ -178,30 +163,6 @@ function App() {
       void disconnectRoom()
     }
   }, [])
-
-  // Dynamic keyword checking to highlight map pin and property card
-  useEffect(() => {
-    const combinedText = (transcript + ' ' + replyText).toLowerCase()
-    if (combinedText.includes('hinjewadi') || combinedText.includes('panache') || combinedText.includes('godrej')) {
-      setFocusedLocationPin('Hinjewadi')
-      if (combinedText.includes('godrej')) {
-        setSelectedProperty(RECOMMENDATIONS[1])
-      } else {
-        setSelectedProperty(RECOMMENDATIONS[0])
-      }
-    } else if (combinedText.includes('bavdhan') || combinedText.includes('crest')) {
-      setFocusedLocationPin('Bavdhan')
-    } else if (combinedText.includes('kharadi') || combinedText.includes('skyii') || combinedText.includes('vtp')) {
-      setFocusedLocationPin('Kharadi')
-      setSelectedProperty(RECOMMENDATIONS[2])
-    } else if (combinedText.includes('baner')) {
-      setFocusedLocationPin('Baner')
-    } else if (combinedText.includes('hadapsar')) {
-      setFocusedLocationPin('Hadapsar')
-    } else if (combinedText.includes('koregaon')) {
-      setFocusedLocationPin('Koregaon Park')
-    }
-  }, [transcript, replyText])
 
   const appendTurn = (role: VoiceTurn['role'], text: string) => {
     setTurns((currentTurns) => [...currentTurns, { role, text }])
@@ -549,7 +510,7 @@ function App() {
     })
   }
 
-  const sendVoiceTurn = async (text: string) => {
+  const sendVoiceTurn = async (text: string, city?: string) => {
     const response = await fetch(`${backendBaseUrl}/voice/turn`, {
       method: 'POST',
       headers: {
@@ -558,6 +519,8 @@ function App() {
       body: JSON.stringify({
         transcript: text,
         voice,
+        session_id: sessionId,
+        city: city ?? activeCity,
       }),
     })
 
@@ -593,8 +556,10 @@ function App() {
     setTranscript(recognizedText)
     appendTurn('user', recognizedText)
 
+    const cityForTurn = await syncVoiceToUi(recognizedText)
+
     setStatus('Thinking...')
-    const voiceTurn = await sendVoiceTurn(recognizedText)
+    const voiceTurn = await sendVoiceTurn(recognizedText, cityForTurn)
     setReplyText(voiceTurn.response_text ?? '')
     appendTurn('assistant', voiceTurn.response_text ?? '')
     setIsProcessing(false)
@@ -643,7 +608,8 @@ function App() {
       setTranscript(currentQuery)
       setIsProcessing(true)
       setStatus('Thinking...')
-      const voiceTurn = await sendVoiceTurn(currentQuery)
+      const cityForTurn = await syncVoiceToUi(currentQuery)
+      const voiceTurn = await sendVoiceTurn(currentQuery, cityForTurn)
       setReplyText(voiceTurn.response_text ?? '')
       appendTurn('assistant', voiceTurn.response_text ?? '')
       setIsProcessing(false)
@@ -658,13 +624,13 @@ function App() {
   }
 
   const handleBookSiteVisit = async () => {
-    const query = `Book a site visit for ${selectedProperty.name} this weekend`
+    const query = `Book a site visit for ${selectedApartment?.name ?? 'the selected property'} this weekend`
     appendTurn('user', query)
     setTranscript(query)
     setIsProcessing(true)
     setStatus('Thinking...')
     try {
-      const voiceTurn = await sendVoiceTurn(query)
+      const voiceTurn = await sendVoiceTurn(query, activeCity)
       setReplyText(voiceTurn.response_text ?? '')
       appendTurn('assistant', voiceTurn.response_text ?? '')
       setIsProcessing(false)
@@ -682,12 +648,12 @@ function App() {
     if (actionName === 'Schedule Site Visit') {
       void handleBookSiteVisit()
     } else {
-      const query = `Give me information on ${actionName} for ${selectedProperty.name}`
+      const query = `Give me information on ${actionName} for ${selectedApartment?.name ?? 'this property'}`
       appendTurn('user', query)
       setTranscript(query)
       setStatus('Thinking...')
       setIsProcessing(true)
-      sendVoiceTurn(query)
+      sendVoiceTurn(query, activeCity)
         .then(async (res) => {
           setReplyText(res.response_text ?? '')
           appendTurn('assistant', res.response_text ?? '')
@@ -704,7 +670,6 @@ function App() {
   }
 
   const conversationTurns = turns.filter((t) => t.role !== 'system')
-  const mapNodes = CITY_MAPS[activeCity] ?? CITY_MAPS.Pune
 
   return (
     <div className="app-shell">
@@ -844,6 +809,13 @@ function App() {
                     setIsProcessing(false)
                     setStatus('Conversation Ended')
                     appendTurn('system', 'Conversation ended by user.')
+                    // Clear backend conversation memory for this session,
+                    // then generate a fresh session ID for the next conversation.
+                    const currentSession = sessionId
+                    setSessionId(generateSessionId())
+                    fetch(`${backendBaseUrl}/session/clear?session_id=${encodeURIComponent(currentSession)}`, {
+                      method: 'POST',
+                    }).catch(() => null) // fire-and-forget, don't block UI
                   }}
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="14" height="14">
@@ -996,16 +968,14 @@ function App() {
                 </div>
 
                 <div className="map-city-tabs">
-                  {['Pune', 'Mumbai', 'Delhi', 'Hyderabad'].map((city) => (
+                  {SUPPORTED_CITIES.map((city) => (
                     <button
                       key={city}
                       type="button"
                       className={`map-city-tab-btn ${activeCity === city ? 'map-city-tab-active' : ''}`}
                       onClick={() => {
                         setActiveCity(city)
-                        // Auto focus first pin of that city
-                        const firstPin = CITY_MAPS[city]?.[0]?.name ?? ''
-                        setFocusedLocationPin(firstPin)
+                        setMapZoomMode('overview')
                       }}
                     >
                       {city === 'Pune' && (
@@ -1016,81 +986,34 @@ function App() {
                   ))}
                 </div>
 
-                <div className="map-canvas-container">
-                  <svg className="vector-map-svg" viewBox="0 0 400 400" width="100%" height="100%">
-                    <defs>
-                      <pattern id="blueprintGrid" width="30" height="30" patternUnits="userSpaceOnUse">
-                        <path d="M 30 0 L 0 0 0 30" fill="none" stroke="rgba(6, 182, 212, 0.04)" strokeWidth="1" />
-                      </pattern>
-                      <radialGradient id="centerMapGlow" cx="50%" cy="50%" r="50%">
-                        <stop offset="0%" stopColor="#8b5cf6" stopOpacity="0.2" />
-                        <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0" />
-                      </radialGradient>
-                    </defs>
-
-                    {/* Blueprint grid background */}
-                    <rect width="100%" height="100%" fill="url(#blueprintGrid)" />
-
-                    {/* Cyber Target Circle */}
-                    <circle cx="200" cy="200" r="160" fill="none" stroke="rgba(139, 92, 246, 0.02)" strokeWidth="2" />
-                    <circle cx="200" cy="200" r="90" fill="none" stroke="rgba(6, 182, 212, 0.03)" strokeWidth="1" strokeDasharray="4,4" />
-                    <circle cx="200" cy="200" r="50" fill="url(#centerMapGlow)" />
-                    
-                    {/* Core radar center pin */}
-                    <circle cx="200" cy="200" r="22" fill="rgba(139, 92, 246, 0.12)" stroke="rgba(139, 92, 246, 0.5)" strokeWidth="1.5" />
-                    <circle cx="200" cy="200" r="8" fill="#8b5cf6" className="neon-pulse-ring" />
-                    {/* Tiny building shape in center */}
-                    <path d="M 195 205 L 195 197 L 199 193 L 205 193 L 205 205 Z" fill="#ffffff" opacity="0.9" />
-
-                    {/* Futuristic Cyber Road network lines */}
-                    <path d="M 40 220 Q 200 110 360 220" fill="none" stroke="rgba(100, 116, 139, 0.12)" strokeWidth="8" strokeLinecap="round" />
-                    <path d="M 80 80 L 320 320" fill="none" stroke="rgba(100, 116, 139, 0.1)" strokeWidth="4" strokeLinecap="round" />
-                    <path d="M 320 80 L 80 320" fill="none" stroke="rgba(100, 116, 139, 0.08)" strokeWidth="4" strokeLinecap="round" strokeDasharray="5,5" />
-
-                    {/* Map pins representing cities locations */}
-                    {mapNodes.map((node) => {
-                      const isFocused = focusedLocationPin === node.name
-                      const px = node.x * 4
-                      const py = node.y * 4
-
-                      return (
-                        <g
-                          key={node.name}
-                          className={`cyber-map-pin ${isFocused ? 'cyber-map-pin-focused' : ''}`}
-                          onClick={() => setFocusedLocationPin(node.name)}
-                        >
-                          <circle cx={px} cy={py} r={isFocused ? 20 : 10} className="cyber-pin-outer-glow" />
-                          <circle cx={px} cy={py} r={isFocused ? 6 : 4} className="cyber-pin-dot" />
-                          
-                          {/* Floating Location Tag text */}
-                          <g transform={`translate(${px}, ${py - 16})`}>
-                            <rect x="-45" y="-13" width="90" height="18" rx="4" className="cyber-pin-label-box" />
-                            <text x="0" y="0" dy="3.5" textAnchor="middle" className="cyber-pin-label-text">
-                              {node.name}
-                            </text>
-                          </g>
-                        </g>
-                      )
-                    })}
-                  </svg>
+                <div className="map-canvas-container leaflet-host">
+                  <PropertyMap
+                    city={activeCity}
+                    apartments={apartments}
+                    selectedApartment={selectedApartment}
+                    zoomMode={mapZoomMode}
+                    onApartmentSelect={handleApartmentSelect}
+                  />
                 </div>
               </div>
 
               {/* Statistics Metrics Cards */}
               <div className="map-stats-grid">
                 <div className="map-stat-card">
-                  <span className="stat-num">128+</span>
-                  <span className="stat-label">Premium Projects</span>
+                  <span className="stat-num">{apartments.length || '—'}</span>
+                  <span className="stat-label">Projects in {activeCity}</span>
                 </div>
                 <div className="map-stat-card">
                   <span className="stat-num">₹72 L - ₹3.2 Cr</span>
                   <span className="stat-label">Price Range</span>
                 </div>
                 <div className="map-stat-card">
-                  <span className="stat-num">12,450+</span>
-                  <span className="stat-label">Happy Families</span>
+                  <span className="stat-num">{focusedLocationPin || activeCity}</span>
+                  <span className="stat-label">Focused Locality</span>
                 </div>
               </div>
+
+              <ApartmentDetails apartment={selectedApartment} />
 
               {/* Center input typing bar dock */}
               <div className="hud-dock-footer">
@@ -1125,54 +1048,21 @@ function App() {
 
               {/* Recommendations List */}
               <div className="showcase-list">
-                {RECOMMENDATIONS.map((prop) => {
-                  const isSelected = selectedProperty.id === prop.id
-                  return (
-                    <article
-                      key={prop.id}
-                      className={`prop-list-card ${isSelected ? 'prop-list-card-selected' : ''}`}
-                      onClick={() => setSelectedProperty(prop)}
-                    >
-                      <div className="prop-list-img-placeholder">
-                        {/* Wireframe building vector SVG representation */}
-                        <svg viewBox="0 0 100 80" className="prop-wireframe-svg">
-                          <rect x="10" y="30" width="24" height="40" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
-                          <rect x="38" y="15" width="28" height="55" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
-                          <rect x="70" y="40" width="22" height="30" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
-                          <line x1="0" y1="70" x2="100" y2="70" stroke="rgba(255,255,255,0.15)" strokeWidth="1.5" />
-                          {/* Glowing window light dots inside active card */}
-                          {isSelected && (
-                            <>
-                              <rect x="44" y="25" width="4" height="4" fill="#06b6d4" className="window-glow" />
-                              <rect x="58" y="35" width="4" height="4" fill="#8b5cf6" className="window-glow-delay" />
-                              <rect x="16" y="45" width="4" height="4" fill="#06b6d4" />
-                            </>
-                          )}
-                        </svg>
-                        <span className={`prop-tag-badge ${prop.tagClass}`}>{prop.tag}</span>
-                      </div>
-
-                      <div className="prop-list-info">
-                        <div className="prop-list-row-first">
-                          <h4 className="prop-list-name">{prop.name}</h4>
-                          <button type="button" className="prop-favorite-btn" aria-label="Favorite">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                            </svg>
-                          </button>
-                        </div>
-                        <p className="prop-list-location">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="10" height="10">
-                            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" />
-                          </svg>
-                          {prop.location}
-                        </p>
-                        <p className="prop-list-type">{prop.type}</p>
-                        <strong className="prop-list-price">{prop.price}</strong>
-                      </div>
-                    </article>
-                  )
-                })}
+                {apartmentsLoading && (
+                  <p className="showcase-loading">Loading properties in {activeCity}…</p>
+                )}
+                {!apartmentsLoading && apartments.length === 0 && (
+                  <p className="showcase-empty">No properties found in {activeCity}.</p>
+                )}
+                {!apartmentsLoading &&
+                  apartments.map((apt) => (
+                    <ApartmentCard
+                      key={apt.id}
+                      apartment={apt}
+                      selected={selectedApartment?.id === apt.id}
+                      onSelect={handleApartmentSelect}
+                    />
+                  ))}
               </div>
 
               {/* Quick Actions Panel */}

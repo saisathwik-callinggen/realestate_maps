@@ -14,6 +14,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from services.inventory import build_inventory_context, detect_city_from_text, get_apartments_for_city
+
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
@@ -42,7 +44,10 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com/chat/completions"
 #     genai.configure(api_key=GEMINI_API_KEY)
 # ─────────────────────────────────────────────────────────────────────────────
 
+from routers.properties import router as properties_router
+
 app = FastAPI(title="RealEstateAgent Voice Pipeline")
+app.include_router(properties_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,6 +63,7 @@ class VoiceTurnRequest(BaseModel):
     voice: str = "default"
     language: str = "en-US"
     session_id: str = "default"   # unique per browser session
+    city: str | None = None       # active city from UI or detected from speech
 
 
 # In-memory conversation store  { session_id -> [messages] }
@@ -109,12 +115,38 @@ def tts_content_type(response: requests.Response) -> str:
     return content_type.split(";", 1)[0].strip() or "audio/wav"
 
 
-def build_real_estate_reply(transcript: str) -> str:
+def build_real_estate_reply(transcript: str, city: str | None = None) -> str:
     cleaned_text = transcript.strip()
     lowered_text = cleaned_text.lower()
 
     if not cleaned_text:
         return "I did not catch that. Tell me your budget, preferred area, or number of bedrooms."
+
+    resolved_city = city or detect_city_from_text(cleaned_text)
+    listings = get_apartments_for_city(resolved_city)
+
+    if listings and any(keyword in lowered_text for keyword in ("property", "properties", "apartment", "flat", "bhk", "option", "show", "recommend", "looking")):
+        names = ", ".join(
+            f"{item['name']} ({item['bhk']}, {item['price']})" for item in listings
+        )
+        return f"In {resolved_city}, I have these options: {names}. Tell me which one interests you."
+
+    if listings and resolved_city and any(keyword in lowered_text for keyword in ("delhi", "pune", "mumbai", "hyderabad", "gurugram", "gurgaon")):
+        names = ", ".join(
+            f"{item['name']} ({item['bhk']}, {item['price']})" for item in listings
+        )
+        return f"For {resolved_city}, here are our listings: {names}. Which would you like to explore?"
+
+    if listings:
+        for item in listings:
+            name_lower = item["name"].lower()
+            if name_lower in lowered_text or any(
+                part in lowered_text for part in name_lower.split() if len(part) > 3
+            ):
+                return (
+                    f"{item['name']} is a great choice — {item['bhk']} starting at {item['price']} "
+                    f"in {item['address']}. {item['description']}"
+                )
 
     if any(keyword in lowered_text for keyword in ("budget", "price", "cost")):
         return (
@@ -202,6 +234,7 @@ def build_real_estate_reply(transcript: str) -> str:
 def generate_deepseek_reply(
     transcript: str,
     history: list[dict],
+    city: str | None = None,
 ) -> tuple[str, str]:
     """Call DeepSeek's OpenAI-compatible chat completions endpoint.
     `history` is the full message list for this session (excluding the current
@@ -209,9 +242,12 @@ def generate_deepseek_reply(
     Falls back to the local rule-based reply if the API key is missing
     or the call fails.
     """
+    resolved_city = city or detect_city_from_text(transcript)
+    inventory_block = build_inventory_context(resolved_city)
+
     if not DEEPSEEK_API_KEY:
         print("DEEPSEEK_API_KEY not set — using local fallback reply")
-        return build_real_estate_reply(transcript), "fallback"
+        return build_real_estate_reply(transcript, resolved_city), "fallback"
 
     system_prompt = (
         "You are a concise, helpful real estate assistant for the Indian market. "
@@ -219,7 +255,8 @@ def generate_deepseek_reply(
         "preferred location, property type, number of bedrooms, and any other preferences. "
         "Use that context in every reply without asking for information already given. "
         "Answer only questions about property search, budgets, locations, amenities, "
-        "EMI, or site visits. Keep replies under 3 sentences."
+        "EMI, or site visits. Keep replies under 3 sentences.\n\n"
+        + (inventory_block if inventory_block else "No property inventory loaded for this city yet.")
     )
 
     messages = [
@@ -248,7 +285,7 @@ def generate_deepseek_reply(
         )
         if resp.status_code != 200:
             print(f"DeepSeek API error {resp.status_code}: {resp.text}")
-            return build_real_estate_reply(transcript), "fallback"
+            return build_real_estate_reply(transcript, resolved_city), "fallback"
 
         data = resp.json()
         reply = data["choices"][0]["message"]["content"].strip()
@@ -258,7 +295,7 @@ def generate_deepseek_reply(
 
     except Exception as exc:
         print(f"DeepSeek call failed: {exc} — using local fallback")
-        return build_real_estate_reply(transcript), "fallback"
+        return build_real_estate_reply(transcript, resolved_city), "fallback"
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -362,8 +399,10 @@ async def voice_turn(turn: VoiceTurnRequest):
     session_id = turn.session_id or "default"
     history = conversation_store.setdefault(session_id, [])
 
+    resolved_city = turn.city or detect_city_from_text(turn.transcript)
+
     # ── Active: DeepSeek (with conversation memory) ───────────────────────────
-    response_text, reply_source = generate_deepseek_reply(turn.transcript, history)
+    response_text, reply_source = generate_deepseek_reply(turn.transcript, history, resolved_city)
     # ── Rollback: swap the line above with the one below to revert to Gemini ──
     # response_text, reply_source = generate_gemini_reply(turn.transcript)
     # ─────────────────────────────────────────────────────────────────────────

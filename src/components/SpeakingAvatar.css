@@ -1,319 +1,118 @@
-.avatar-stage {
-  position: relative;
+.avatar-wrapper {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  width: 100%;
-  padding: 1rem 0;
-}
-
-/* Horizontal Visualizer Pod Wrapper */
-.avatar-hud-visualizer-container {
-  position: relative;
-  width: 100%;
-  height: 140px;
-  display: flex;
-  align-items: center;
   justify-content: center;
+  align-items: center;
+  margin-top: 1.5rem;
+  margin-bottom: 1.5rem;
 }
 
-.avatar-background-visualizer {
+.avatar-circle-container {
+  position: relative;
+  width: 160px;
+  height: 160px;
+  border-radius: 50%;
+  padding: 4px; /* Space for a subtle border */
+  background: white; /* If you want a solid border, else gradient */
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* Add a very subtle light blue/grey radial shadow behind the circle just to give it depth as per design */
+.avatar-circle-container::before {
+  content: '';
   position: absolute;
-  inset: 0;
+  top: -10px;
+  left: -10px;
+  right: -10px;
+  bottom: -10px;
+  background: radial-gradient(circle, rgba(230, 235, 245, 0.8) 0%, rgba(255, 255, 255, 0) 70%);
+  border-radius: 50%;
+  z-index: -1;
+}
+
+
+.avatar-image {
   width: 100%;
   height: 100%;
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* Circular Pod Glow Background */
-.avatar-pod-glow {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 180px;
-  height: 180px;
-  transform: translate(-50%, -50%);
+  object-fit: cover;
   border-radius: 50%;
-  filter: blur(35px);
-  pointer-events: none;
-  z-index: 1;
-  opacity: 0.5;
-  transition: background 0.8s ease;
+  background: #f1f5f9;
 }
 
-.avatar-stage-idle .avatar-pod-glow {
-  background: radial-gradient(circle, rgba(139, 92, 246, 0.25) 0%, transparent 70%);
+.avatar-speaking-anim {
+  animation: gentlePulse 2s infinite ease-in-out;
 }
 
-.avatar-stage-listening .avatar-pod-glow {
-  background: radial-gradient(circle, rgba(16, 185, 129, 0.3) 0%, transparent 70%);
-}
-
-.avatar-stage-thinking .avatar-pod-glow {
-  background: radial-gradient(circle, rgba(236, 72, 153, 0.3) 0%, transparent 70%);
-}
-
-.avatar-stage-speaking .avatar-pod-glow {
-  background: radial-gradient(circle, rgba(6, 182, 212, 0.3) 0%, transparent 70%);
-}
-
-/* Symmetrical Circular Avatar Frame */
-.avatar-frame {
-  position: relative;
-  z-index: 2;
-  width: 130px;
-  height: 130px;
-  border-radius: 50%;
-  background: radial-gradient(135deg, rgba(8, 18, 30, 0.95) 0%, rgba(2, 6, 23, 0.98) 100%);
-  border: 3.5px solid transparent;
-  background-image: linear-gradient(rgba(8,18,30,0.95), rgba(8,18,30,0.95)), linear-gradient(135deg, var(--accent-rose), var(--accent-cyan));
-  background-origin: border-box;
-  background-clip: padding-box, border-box;
-  box-shadow: 
-    0 10px 30px rgba(0, 0, 0, 0.6),
-    0 0 20px rgba(139, 92, 246, 0.15);
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.avatar-stage-listening .avatar-frame {
-  background-image: linear-gradient(rgba(8,18,30,0.95), rgba(8,18,30,0.95)), linear-gradient(135deg, var(--accent-emerald), var(--accent-cyan));
-  box-shadow: 
-    0 10px 30px rgba(0, 0, 0, 0.6),
-    0 0 25px rgba(16, 185, 129, 0.25);
-  transform: scale(1.02);
-}
-
-.avatar-stage-thinking .avatar-frame {
-  background-image: linear-gradient(rgba(8,18,30,0.95), rgba(8,18,30,0.95)), linear-gradient(135deg, var(--accent-rose), var(--accent-violet));
-  box-shadow: 
-    0 10px 30px rgba(0, 0, 0, 0.6),
-    0 0 25px rgba(236, 72, 153, 0.2);
-}
-
-.avatar-stage-speaking .avatar-frame {
-  background-image: linear-gradient(rgba(8,18,30,0.95), rgba(8,18,30,0.95)), linear-gradient(135deg, var(--accent-cyan), var(--accent-violet));
-  box-shadow: 
-    0 10px 30px rgba(0, 0, 0, 0.6),
-    0 0 30px rgba(6, 182, 212, 0.3);
-  animation: gentleBob 3s ease-in-out infinite alternate;
-}
-
-.avatar-svg {
-  width: 90%;
-  height: 90%;
-  display: block;
-}
-
-.avatar-mouth {
-  transition: transform 0.05s ease;
-}
-
-/* Visual Titles below Visualizer */
-.avatar-meta-container {
-  text-align: center;
-  margin-top: 1.5rem;
-  padding: 0 0.5rem;
-  min-height: 4.5rem;
-}
-
-.avatar-heading {
-  font-family: 'Space Grotesk', sans-serif;
-  font-size: 1.45rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: #ffffff;
-  margin: 0;
-}
-
-.avatar-subtitle {
-  font-size: 0.82rem;
-  color: #64748b;
-  margin-top: 0.35rem;
-  margin-bottom: 0;
-  line-height: 1.45;
-  font-weight: 500;
-}
-
-/* Floating Controls Mic Dock */
-.avatar-controls-dock {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  margin-top: 1rem;
-}
-
-.avatar-mic-trigger {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 3.5rem;
-  height: 3.5rem;
-  border-radius: 50%;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  outline: none;
-}
-
-.mic-outer-ring {
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-  z-index: 1;
-  opacity: 0.8;
-  transition: opacity 0.3s ease;
-}
-
-.avatar-mic-trigger:hover .mic-outer-ring {
-  opacity: 1;
-  box-shadow: 0 0 15px rgba(139, 92, 246, 0.4);
-}
-
-.avatar-mic-active .mic-outer-ring {
-  background: linear-gradient(135deg, #10b981, #06b6d4);
-  animation: pulseOuterRing 1.6s infinite ease-in-out;
-}
-
-.mic-inner-core {
-  position: absolute;
-  inset: 1px;
-  border-radius: 50%;
-  background: #090f20;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #ffffff;
-  transition: background-color 0.3s, color 0.3s;
-}
-
-.avatar-mic-trigger:hover .mic-inner-core {
-  background: #0f172a;
-  color: #38bdf8;
-}
-
-.avatar-mic-active .mic-inner-core {
-  background: #064e3b;
-  color: #34d399;
-}
-
-.avatar-mic-instruction {
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: #475569;
-  letter-spacing: 0.08em;
-  margin-top: 0.55rem;
-}
-
-/* Voice Mode indicators card grid */
-.voice-mode-card {
-  width: 100%;
-  background: rgba(15, 23, 42, 0.25);
-  border: 1px solid rgba(255, 255, 255, 0.03);
-  border-radius: 1rem;
-  padding: 1rem 0.85rem;
-  margin-top: 1.75rem;
-  box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);
-}
-
-.voice-mode-title {
-  display: block;
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  font-weight: 700;
-  color: #475569;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin-bottom: 0.75rem;
-}
-
-.voice-mode-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.45rem;
-}
-
-.voice-mode-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.5rem 0.25rem;
-  background: rgba(2, 6, 23, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.01);
-  border-radius: 0.5rem;
-  opacity: 0.35;
-  transition: all 0.3s ease;
-}
-
-.voice-mode-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #64748b;
-}
-
-.voice-mode-name {
-  font-size: 0.68rem;
-  font-weight: 600;
-  color: #94a3b8;
-}
-
-.voice-mode-item-active {
-  opacity: 1;
-  background: rgba(15, 23, 42, 0.6);
-  border-color: rgba(59, 130, 246, 0.25);
-  box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-}
-
-.voice-mode-item-active .voice-mode-name {
-  color: #ffffff;
-}
-
-.avatar-stage-idle .voice-mode-item-active .voice-mode-dot {
-  background: #3b82f6;
-  box-shadow: 0 0 6px #3b82f6;
-}
-
-.avatar-stage-listening .voice-mode-item-active .voice-mode-dot {
-  background: #10b981;
-  box-shadow: 0 0 6px #10b981;
-}
-
-.avatar-stage-thinking .voice-mode-item-active .voice-mode-dot {
-  background: #ec4899;
-  box-shadow: 0 0 6px #ec4899;
-}
-
-.avatar-stage-speaking .voice-mode-item-active .voice-mode-dot {
-  background: #06b6d4;
-  box-shadow: 0 0 6px #06b6d4;
-}
-
-/* keyframes */
-@keyframes pulseOuterRing {
-  0%, 100% {
-    transform: scale(1);
-    opacity: 0.8;
+@keyframes gentlePulse {
+  0% {
+    box-shadow: 0 0 0 0px rgba(59, 130, 246, 0.4);
   }
   50% {
-    transform: scale(1.1);
-    opacity: 0.4;
+    box-shadow: 0 0 0 10px rgba(59, 130, 246, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0px rgba(59, 130, 246, 0);
   }
 }
 
-@keyframes gentleBob {
-  0% { transform: translateY(0); }
-  100% { transform: translateY(-4px); }
+.avatar-status-badge {
+  position: absolute;
+  bottom: -10px;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+  border: 1px solid #e2e8f0;
+  background: white;
 }
 
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
 
+.status-idle {
+  color: #64748b;
+}
+.status-idle .status-dot {
+  background: #cbd5e1;
+}
+
+.status-listening {
+  color: #3b82f6;
+  border-color: rgba(59, 130, 246, 0.2);
+}
+.status-listening .status-dot {
+  background: #3b82f6;
+  animation: blink 1s infinite;
+}
+
+.status-thinking {
+  color: #ec4899;
+  border-color: rgba(236, 72, 153, 0.2);
+}
+.status-thinking .status-dot {
+  background: #ec4899;
+  animation: blink 1s infinite alternate;
+}
+
+.status-speaking {
+  color: white;
+  background: #4f46e5;
+  border-color: #4f46e5;
+}
+.status-speaking .status-dot {
+  background: white;
+}
+
+@keyframes blink {
+  0% { opacity: 1; }
+  50% { opacity: 0.4; }
+  100% { opacity: 1; }
+}

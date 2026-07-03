@@ -2,133 +2,105 @@
   width: 100%;
   height: 100%;
   min-height: 280px;
-  border-radius: 0 0 var(--radius) var(--radius);
   z-index: 1;
 }
 
-.map-canvas-container.leaflet-host {
-  padding: 0;
-  min-height: 320px;
-  overflow: hidden;
+.globe-view-container {
+  background: #eef2f6;
 }
 
-/* Dark-theme popup styling */
-.estate-popup .leaflet-popup-content-wrapper {
-  background: rgba(15, 23, 42, 0.95);
-  color: #e2e8f0;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+.property-marker-leaflet-anchor {
+  background: transparent;
+  border: none;
+}
+
+.property-map-marker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: transform 0.25s ease, filter 0.25s ease;
+}
+
+.property-map-marker:hover {
+  transform: translateY(-2px) scale(1.02);
+}
+
+.property-map-marker__card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
   border-radius: 0.65rem;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
-}
-
-.estate-popup .leaflet-popup-tip {
-  background: rgba(15, 23, 42, 0.95);
-}
-
-.leaflet-popup-card strong {
-  display: block;
-  font-family: 'Space Grotesk', sans-serif;
-  font-size: 0.9rem;
-  color: #ffffff;
-  margin-bottom: 0.35rem;
-}
-
-.leaflet-popup-card .popup-price {
-  margin: 0 0 0.35rem;
-  font-weight: 700;
-  color: #06b6d4;
-  font-size: 0.85rem;
-}
-
-.leaflet-popup-card .popup-address {
-  margin: 0 0 0.35rem;
-  font-size: 0.75rem;
-  color: #94a3b8;
-}
-
-.leaflet-popup-card .popup-desc {
-  margin: 0;
-  font-size: 0.72rem;
-  line-height: 1.45;
-  color: #cbd5e1;
-}
-
-/* Apartment details panel below map stats */
-.apartment-details-panel {
-  margin-top: 0.5rem;
-  padding: 1rem 1.25rem;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-
-.apartment-details-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 0.35rem;
-}
-
-.apartment-details-header h4 {
-  margin: 0;
-  font-family: 'Space Grotesk', sans-serif;
-  font-size: 1rem;
-  color: #ffffff;
-}
-
-.apartment-details-price {
-  margin: 0 0 0.5rem;
-  font-size: 1.05rem;
-  font-weight: 700;
-  color: #06b6d4;
-}
-
-.apartment-details-meta {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.78rem;
-  color: #94a3b8;
-  margin-bottom: 0.5rem;
-}
-
-.apartment-details-dot {
-  opacity: 0.5;
-}
-
-.apartment-details-address {
-  margin: 0 0 0.5rem;
-  font-size: 0.78rem;
-  color: #64748b;
-}
-
-.apartment-details-description {
-  margin: 0;
-  font-size: 0.82rem;
-  line-height: 1.55;
-  color: #cbd5e1;
-}
-
-.showcase-loading,
-.showcase-empty {
-  padding: 1.5rem;
+  padding: 0.45rem 0.65rem;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
   text-align: center;
-  color: #64748b;
-  font-size: 0.85rem;
+  min-width: 120px;
+  max-width: 170px;
+}
+
+.property-map-marker__name {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.25;
+  margin-bottom: 0.2rem;
+}
+
+.property-map-marker__tag {
+  display: inline-block;
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: #4f46e5;
+  background: #eef2ff;
+  border-radius: 999px;
+  padding: 0.12rem 0.45rem;
+}
+
+.property-map-marker__stem {
+  width: 2px;
+  height: 10px;
+  background: #cbd5e1;
+}
+
+.property-map-marker__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4f46e5;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.25);
+}
+
+.property-map-marker--active .property-map-marker__card {
+  border-color: #4f46e5;
+  box-shadow: 0 8px 24px rgba(79, 70, 229, 0.22);
+}
+
+.property-map-marker--active .property-map-marker__name {
+  color: #4f46e5;
+}
+
+.property-map-marker--active .property-map-marker__dot {
+  background: #4f46e5;
+  transform: scale(1.2);
 }
 
 .leaflet-container {
-  background: #0f172a;
+  background: #eef2f6;
   font-family: inherit;
 }
 
 .leaflet-control-zoom a {
-  background: rgba(15, 23, 42, 0.9) !important;
-  color: #e2e8f0 !important;
-  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #e2e8f0 !important;
 }
 
 .leaflet-control-zoom a:hover {
-  background: rgba(30, 41, 59, 0.95) !important;
+  background: #f8fafc !important;
+}
+
+.leaflet-control-attribution {
+  font-size: 0.65rem;
 }

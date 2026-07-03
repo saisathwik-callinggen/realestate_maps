@@ -1,56 +1,23 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { Apartment } from '../properties/types'
 import { CITY_CENTERS } from './cityCenters'
+import { createPropertyMarkerIcon, fitMapToApartments } from './createPropertyMarker'
 import './PropertyMap.css'
 
-import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
-import markerIcon from 'leaflet/dist/images/marker-icon.png'
-import markerShadow from 'leaflet/dist/images/marker-shadow.png'
-
-delete (L.Icon.Default.prototype as unknown as { _getIconUrl?: unknown })._getIconUrl
-L.Icon.Default.mergeOptions({
-  iconUrl: markerIcon,
-  iconRetinaUrl: markerIcon2x,
-  shadowUrl: markerShadow,
-})
+// @ts-ignore react-globe.gl types are not bundled
+import Globe from 'react-globe.gl'
 
 type PropertyMapProps = {
   city: string
   apartments: Apartment[]
   selectedApartment: Apartment | null
-  zoomMode: 'overview' | 'property'
+  zoomMode: 'globe' | 'city' | 'property'
   onApartmentSelect: (apartment: Apartment) => void
 }
 
-function buildPopupHtml(apartment: Apartment): string {
-  return `
-    <div class="leaflet-popup-card">
-      <strong>${apartment.name}</strong>
-      <p class="popup-price">${apartment.price}</p>
-      <p class="popup-address">${apartment.address}</p>
-      <p class="popup-desc">${apartment.description}</p>
-    </div>
-  `
-}
-
-function fitMapToApartments(map: L.Map, apartments: Apartment[]) {
-  if (apartments.length === 0) return
-
-  if (apartments.length === 1) {
-    const apt = apartments[0]
-    map.flyTo([apt.latitude, apt.longitude], 14, { duration: 1.2 })
-    return
-  }
-
-  const bounds = L.latLngBounds(
-    apartments.map((apt) => [apt.latitude, apt.longitude] as [number, number]),
-  )
-  map.flyToBounds(bounds, { padding: [48, 48], duration: 1.2, maxZoom: 13 })
-}
-
-export function PropertyMap({
+function LeafletMap({
   city,
   apartments,
   selectedApartment,
@@ -86,8 +53,7 @@ export function PropertyMap({
     }
   }, [])
 
-  // Re-sync markers and show all points when city or apartment list changes
-  useEffect(() => {
+  const syncMarkers = (activeId: string | null, shouldFitBounds: boolean) => {
     const map = mapRef.current
     if (!map) return
 
@@ -95,9 +61,11 @@ export function PropertyMap({
     markersRef.current.clear()
 
     apartments.forEach((apartment) => {
-      const marker = L.marker([apartment.latitude, apartment.longitude])
-        .addTo(map)
-        .bindPopup(buildPopupHtml(apartment), { maxWidth: 280, className: 'estate-popup' })
+      const isActive = apartment.id === activeId
+      const marker = L.marker([apartment.latitude, apartment.longitude], {
+        icon: createPropertyMarkerIcon(apartment, isActive),
+        zIndexOffset: isActive ? 1000 : 0,
+      }).addTo(map)
 
       marker.on('click', () => onSelectRef.current(apartment))
       markersRef.current.set(apartment.id, marker)
@@ -105,21 +73,79 @@ export function PropertyMap({
 
     requestAnimationFrame(() => {
       map.invalidateSize()
-      fitMapToApartments(map, apartments)
+      if (shouldFitBounds && apartments.length > 0) {
+        fitMapToApartments(map, apartments)
+      }
     })
-  }, [city, apartments])
+  }
 
-  // Zoom to a specific property when user picks one (card click or voice)
+  useEffect(() => {
+    syncMarkers(selectedApartment?.id ?? null, zoomMode !== 'property')
+  }, [city, apartments, zoomMode])
+
   useEffect(() => {
     const map = mapRef.current
     if (!map || !selectedApartment || zoomMode !== 'property') return
 
-    const marker = markersRef.current.get(selectedApartment.id)
-    if (!marker) return
-
+    syncMarkers(selectedApartment.id, false)
     map.flyTo([selectedApartment.latitude, selectedApartment.longitude], 15, { duration: 1.5 })
-    window.setTimeout(() => marker.openPopup(), 800)
   }, [selectedApartment, zoomMode])
 
-  return <div ref={containerRef} className="property-leaflet-map" aria-label={`Map of ${city}`} />
+  return (
+    <div
+      ref={containerRef}
+      className="property-leaflet-map"
+      aria-label={`Map of ${city}`}
+      style={{ width: '100%', height: '100%' }}
+    />
+  )
+}
+
+function GlobeView() {
+  const globeEl = useRef<any>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
+
+  useEffect(() => {
+    const updateSize = () => {
+      if (containerRef.current) {
+        setDimensions({
+          width: containerRef.current.clientWidth,
+          height: containerRef.current.clientHeight,
+        })
+      }
+    }
+    updateSize()
+    window.addEventListener('resize', updateSize)
+    return () => window.removeEventListener('resize', updateSize)
+  }, [])
+
+  useEffect(() => {
+    if (globeEl.current) {
+      globeEl.current.controls().autoRotate = true
+      globeEl.current.controls().autoRotateSpeed = 0.8
+      globeEl.current.pointOfView({ lat: 22, lng: 79, altitude: 1.5 }, 1000)
+    }
+  }, [dimensions.width])
+
+  return (
+    <div ref={containerRef} className="globe-view-container" style={{ width: '100%', height: '100%' }}>
+      {dimensions.width > 0 && (
+        <Globe
+          ref={globeEl}
+          width={dimensions.width}
+          height={dimensions.height}
+          globeImageUrl="//unpkg.com/three-globe/example/img/earth-blue-marble.jpg"
+          backgroundColor="rgba(0,0,0,0)"
+        />
+      )}
+    </div>
+  )
+}
+
+export function PropertyMap(props: PropertyMapProps) {
+  if (props.zoomMode === 'globe') {
+    return <GlobeView />
+  }
+  return <LeafletMap {...props} />
 }

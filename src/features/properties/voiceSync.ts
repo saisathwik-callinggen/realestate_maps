@@ -44,16 +44,34 @@ function apartmentMatchScore(text: string, apartment: Apartment): number {
 export function matchApartmentFromText(text: string, apartments: Apartment[]): Apartment | null {
   if (!text.trim() || apartments.length === 0) return null
 
-  let best: Apartment | null = null
-  let bestScore = 0
+  const lower = text.toLowerCase()
 
-  for (const apartment of apartments) {
-    const score = apartmentMatchScore(text, apartment)
-    if (score > bestScore) {
-      bestScore = score
-      best = apartment
+  const ranked = apartments
+    .map((apartment) => ({ apartment, score: apartmentMatchScore(text, apartment) }))
+    .sort((a, b) => b.score - a.score)
+
+  const top = ranked[0]
+  if (!top || top.score < 20) {
+    const showYouMatch = lower.match(/(?:show you|recommend|suggest|check out|look at|i like|pasand|choose)\s+(.{4,80})/i)
+    if (showYouMatch) {
+      const phrase = showYouMatch[1].split(/[.,!?]/)[0]
+      const phraseRanked = apartments
+        .map((apartment) => ({ apartment, score: apartmentMatchScore(phrase, apartment) }))
+        .sort((a, b) => b.score - a.score)
+      if (phraseRanked[0]?.score >= 20) return phraseRanked[0].apartment
     }
+    return null
   }
 
-  return bestScore >= 20 ? best : null
+  const second = ranked[1]
+  const explicitChoice =
+    /(?:show you|recommend|suggest|check out|look at|i like|pasand|choose|book|visit)/i.test(text)
+
+  // Full name or explicit recommendation — always select
+  if (top.score >= 100 || explicitChoice) return top.apartment
+
+  // Multiple properties mentioned with similar scores → city overview only
+  if (second && second.score >= 20 && top.score - second.score < 15) return null
+
+  return top.score >= 40 ? top.apartment : null
 }

@@ -27,14 +27,28 @@ export function createPropertyMarkerIcon(apartment: Apartment, isActive: boolean
 export function fitMapToApartments(map: L.Map, apartments: Apartment[]) {
   if (apartments.length === 0) return
 
-  if (apartments.length === 1) {
-    const apt = apartments[0]
-    map.flyTo([apt.latitude, apt.longitude], 14, { duration: 1.2 })
-    return
+  const fitMap = () => {
+    const container = map.getContainer()
+    if (!container || container.offsetWidth === 0 || container.offsetHeight === 0) {
+      window.setTimeout(fitMap, 60)
+      return
+    }
+
+    map.invalidateSize()
+
+    if (apartments.length === 1) {
+      const apt = apartments[0]
+      map.flyTo([apt.latitude, apt.longitude], 14, { duration: 1.2 })
+      return
+    }
+
+    const bounds = L.latLngBounds(
+      apartments.map((apt) => [apt.latitude, apt.longitude] as [number, number]),
+    )
+    map.flyToBounds(bounds, { padding: [56, 56], duration: 1.2, maxZoom: 13 })
   }
 
-  const bounds = L.latLngBounds(
-    apartments.map((apt) => [apt.latitude, apt.longitude] as [number, number]),
-  )
-  map.flyToBounds(bounds, { padding: [56, 56], duration: 1.2, maxZoom: 13 })
+  map.whenReady(() => {
+    window.setTimeout(fitMap, 0)
+  })
 }
